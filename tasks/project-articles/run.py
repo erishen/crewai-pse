@@ -19,17 +19,17 @@ load_dotenv(BASE.parent.parent / ".env")
 from crewai_pse import create_crew  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
-ARTICLES_DIR = ROOT / "personal/personal-site/wordpress-tools/articles/pse"
+ARTICLES_DIR = Path(os.getenv("ARTICLES_DIR", str(ROOT / "personal/personal-site/wordpress-tools/articles/pse")))
 
 PROJECTS = {
     "autogen-pse": {
-        "repo": "erishen/autogen-pse",
+        "repo": os.getenv("GITHUB_REPO_AUTOGEN", "user/autogen-pse"),
         "desc": "基于微软 AutoGen 的 PSE Agent 协作框架",
         "highlights": "PSE 三角色闭环 + 循环控制重试 + 任务注册机制",
         "source_dir": "frameworks/autogen-pse",
     },
     "agentic-souls": {
-        "repo": "erishen/agentic-souls",
+        "repo": os.getenv("GITHUB_REPO_AGENTIC", "user/agentic-souls"),
         "desc": "文档驱动的 AI 工作流系统",
         "highlights": "9 种工作流 + Planner/Evaluator/Specialist + Campaign 任务驱动",
         "source_dir": "frameworks/agentic-souls",
@@ -132,9 +132,9 @@ def main():
     from openai import OpenAI
     fix_client = OpenAI(
         api_key=os.environ.get("OPENAI_API_KEY"),
-        base_url=os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1"),
+        base_url=os.environ.get("OPENAI_BASE_URL"),
     )
-    fix_model = os.environ.get("OPENAI_MODEL", "deepseek-chat").replace("openai/", "")
+    fix_model = os.environ.get("OPENAI_MODEL", "").replace("openai/", "")
 
     crew = create_crew(task="project-articles")
 
@@ -146,10 +146,10 @@ def main():
 ## 项目信息
 - GitHub: {p['repo']}
 - 核心卖点: {p['highlights']}
-- 源码绝对路径: {source_dir}
+- 源码相对路径: {p['source_dir']}
 
 ## 你的任务
-1. 用 read_file 只读取 {source_dir} 下的文件（src/autogen_pse/*.py + README.md）
+1. 用 read_file 只读取源码目录下的文件（src/autogen_pse/*.py + README.md）
 2. 基于源码提炼 2-3 个非显而易见的设计决策
 3. 输出文章结构提纲（标题、每节要点、源码导航推荐文件）
 4. 提纲末尾附上"交付完成"
@@ -162,10 +162,10 @@ def main():
         description=f"""基于 Planner 的提纲，展开成完整中文技术文章。
 
 ⚠️ 这是 AutoGen 项目（{p['repo']}），不是 CrewAI。
-⚠️ 源码在 {source_dir}，用 read_file 读取关键文件验证后再写。
+⚠️ 源码在 {p['source_dir']}，用 read_file 读取关键文件验证后再写。
 
 ## 你的任务
-1. 先用 read_file 读取 {source_dir}/README.md 和核心 .py 文件
+1. 先用 read_file 读取 README.md 和核心 .py 文件
 2. 基于实际源码 + Planner 提纲撰写文章
 3. 所有代码示例、类名、函数名、API 用法必须从源码中提取
 
@@ -207,7 +207,7 @@ def main():
                 print(f"  🔄 自动修正中...")
                 fix_prompt = f"""以下文章被程序化核查发现存在虚构的代码引用。请逐一删除所有虚构引用，不要替换成任何东西。
 
-**虚构项（在 {source_dir} 中不存在）**: {', '.join(fictitious)}
+**虚构项（在源码中不存在）**: {', '.join(fictitious)}
 
 **规则**:
 1. 逐一找到并删除以上每个虚构项在文章中的引用
