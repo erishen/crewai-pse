@@ -1,0 +1,8 @@
+{
+  "项目名": {
+    "repo": "github-user/repo-name",
+    "desc": "项目简短描述",
+    "highlights": "核心技术亮点",
+    "source_dir": "relative/path/to/project"
+  }
+}

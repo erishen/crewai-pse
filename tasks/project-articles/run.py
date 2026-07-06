@@ -2,8 +2,11 @@
 
 用法:
     python run.py <项目名>
+
+项目配置从同目录下的 projects.json 读取，敏感路径通过 .env 环境变量配置。
 """
 
+import json
 import os
 import re
 import sys
@@ -18,23 +21,21 @@ load_dotenv(BASE.parent.parent / ".env")
 
 from crewai_pse import create_crew  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
-ARTICLES_DIR = Path(os.getenv("ARTICLES_DIR", str(ROOT / "personal/personal-site/wordpress-tools/articles/pse")))
+# 从环境变量读取根目录和输出目录，不再硬编码
+ROOT = Path(os.getenv("PSE_ROOT", Path(__file__).resolve().parent.parent.parent.parent.parent))
+ARTICLES_DIR = Path(os.getenv("ARTICLES_DIR", str(ROOT / "articles" / "pse")))
 
-PROJECTS = {
-    "autogen-pse": {
-        "repo": os.getenv("GITHUB_REPO_AUTOGEN", "user/autogen-pse"),
-        "desc": "基于微软 AutoGen 的 PSE Agent 协作框架",
-        "highlights": "PSE 三角色闭环 + 循环控制重试 + 任务注册机制",
-        "source_dir": "frameworks/autogen-pse",
-    },
-    "agentic-souls": {
-        "repo": os.getenv("GITHUB_REPO_AGENTIC", "user/agentic-souls"),
-        "desc": "文档驱动的 AI 工作流系统",
-        "highlights": "9 种工作流 + Planner/Evaluator/Specialist + Campaign 任务驱动",
-        "source_dir": "frameworks/agentic-souls",
-    },
-}
+# 从 projects.json 加载项目配置（已加入 .gitignore，不上传）
+PROJECTS_FILE = BASE / "projects.json"
+
+
+def _load_projects() -> dict:
+    if not PROJECTS_FILE.exists():
+        print(f"❌ 找不到项目配置文件: {PROJECTS_FILE}")
+        print("请从 projects.json.example 复制并填写实际配置")
+        sys.exit(1)
+    with open(PROJECTS_FILE, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _discover_key_files(source_dir: Path) -> list[Path]:
@@ -120,13 +121,14 @@ def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in PROJECTS:
+    projects = _load_projects()
+    if len(sys.argv) < 2 or sys.argv[1] not in projects:
         print("用法: python run.py <项目名>")
-        print(f"可用项目: {', '.join(PROJECTS.keys())}")
+        print(f"可用项目: {', '.join(projects.keys())}")
         sys.exit(1)
 
     project_key = sys.argv[1]
-    p = PROJECTS[project_key]
+    p = projects[project_key]
     source_dir = ROOT / p["source_dir"]
 
     from openai import OpenAI
