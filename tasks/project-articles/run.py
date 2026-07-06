@@ -143,15 +143,13 @@ def main():
     planner_task = Task(
         description=f"""撰写 {p['desc']}（{project_key}）的中文技术文章。
 
-⚠️ 这是 AutoGen 项目（不是 CrewAI），源码在下面目录。
-
 ## 项目信息
 - GitHub: {p['repo']}
 - 核心卖点: {p['highlights']}
-- 源码相对路径: {p['source_dir']}
+- 源码目录: {p['source_dir']}
 
 ## 你的任务
-1. 用 read_file 只读取源码目录下的文件（src/autogen_pse/*.py + README.md）
+1. 用 read_file 读取源码目录下的关键文件（README.md + 核心 .py 文件）
 2. 基于源码提炼 2-3 个非显而易见的设计决策
 3. 输出文章结构提纲（标题、每节要点、源码导航推荐文件）
 4. 提纲末尾附上"交付完成"
@@ -163,7 +161,6 @@ def main():
     specialist_task = Task(
         description=f"""基于 Planner 的提纲，展开成完整中文技术文章。
 
-⚠️ 这是 AutoGen 项目（{p['repo']}），不是 CrewAI。
 ⚠️ 源码在 {p['source_dir']}，用 read_file 读取关键文件验证后再写。
 
 ## 你的任务
