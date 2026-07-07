@@ -5,9 +5,8 @@ description = "Planner-Specialist-Evaluator three-role agent framework powered b
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "crewai[tools]>=0.80",
+    "crewai[litellm]>=0.80,<1.0",
     "python-dotenv>=1.0.0",
-    "pydantic-settings>=2.0",
 ]
 
 [project.optional-dependencies]

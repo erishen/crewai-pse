@@ -15,7 +15,7 @@
 ```markdown
 ---
 title: "标题"
-date: 2026-07-05
+date: {{today}}
 slug: url-friendly-slug
 categories: ["tech"]
 tags: ["相关标签"]

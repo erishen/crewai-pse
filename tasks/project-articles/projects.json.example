@@ -3,6 +3,16 @@
     "repo": "github-user/repo-name",
     "desc": "项目简短描述",
     "highlights": "核心技术亮点",
-    "source_dir": "relative/path/to/project"
+    "source_dir": "relative/path/to/project",
+    "published": {
+      "zh": {
+        "link": "https://example.com/post-slug",
+        "wp_id": 1
+      },
+      "en": {
+        "link": "https://example.com/en/post-slug",
+        "wp_id": 2
+      }
+    }
   }
 }

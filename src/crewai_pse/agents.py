@@ -1,6 +1,6 @@
 """Agent 创建 — 三个角色 + Crew 装配。"""
 
-from crewai import Agent, Crew, Process, LLM
+from crewai import LLM, Agent, Crew, Process
 
 from .config import settings
 from .prompts import load_prompt
@@ -8,8 +8,12 @@ from .tools import read_file, run_bash
 
 
 def _create_llm() -> LLM:
+    model = settings.OPENAI_MODEL
+    # CrewAI requires "openai/" prefix when using custom base_url
+    if not model.startswith("openai/"):
+        model = f"openai/{model}"
     return LLM(
-        model=settings.OPENAI_MODEL.replace("openai/", ""),
+        model=model,
         api_key=settings.OPENAI_API_KEY,
         base_url=settings.OPENAI_BASE_URL,
     )
