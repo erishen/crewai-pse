@@ -38,6 +38,8 @@ def main():
 
     project_key = sys.argv[1]
     slug = project_key.replace("-", "_")
+    slug_zh = f"{slug}-zh"
+    slug_en = f"{slug}-en"
 
     if not WP_TOOLS_DIR or not WP_TOOLS_DIR.exists():
         print("❌ 请设置 WP_TOOLS_DIR 环境变量指向 wordpress-tools 目录")
@@ -49,13 +51,20 @@ def main():
 
     archived = 0
     for lang in ("zh", "en"):
-        src = ARTICLES_DIR / lang / f"{slug}.md"
+        lang_slug = slug_zh if lang == "zh" else slug_en
+        src = ARTICLES_DIR / lang / f"{lang_slug}.md"
+        # 兼容旧文件名（无语言后缀）
+        if not src.exists():
+            legacy = ARTICLES_DIR / lang / f"{slug}.md"
+            if legacy.exists():
+                src = legacy
+                lang_slug = slug
         if not src.exists():
             print(f"  ⏭️  {lang} 文章不存在，跳过")
             continue
         dest_dir = WP_TOOLS_DIR / "articles" / lang
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / f"{slug}.md"
+        dest = dest_dir / f"{lang_slug}.md"
         shutil.move(src, dest)
         print(f"  📁 {lang} 已归档 → {dest}")
         archived += 1

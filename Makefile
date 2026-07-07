@@ -1,4 +1,4 @@
-.PHONY: install lint clean articles articles-agnes publish archive
+.PHONY: install lint clean articles articles-agnes publish archive translate translate-agnes
 
 PY := uv run python
 P ?= $(shell grep '^DEFAULT_PROJECT=' .env 2>/dev/null | cut -d= -f2)
@@ -21,6 +21,15 @@ articles-agnes: ## CrewAI 撰写项目技术文章（Agnes 免费）
 	OPENAI_MODEL=openai/agnes-2.0-flash \
 	OPENAI_BASE_URL=$(shell grep '^AGNES_BASE_URL=' .env | cut -d= -f2) \
 	$(PY) tasks/project-articles/run.py $(P) $(FLAGS)
+
+translate: ## 仅翻译已有中文文章 用法: make translate [P=autogen-pse]
+	$(PY) tasks/project-articles/run.py $(P) --translate
+
+translate-agnes: ## 仅翻译（Agnes 免费）
+	OPENAI_API_KEY=$(shell grep '^AGNES_KEY=' .env | cut -d= -f2) \
+	OPENAI_MODEL=openai/agnes-2.0-flash \
+	OPENAI_BASE_URL=$(shell grep '^AGNES_BASE_URL=' .env | cut -d= -f2) \
+	$(PY) tasks/project-articles/run.py $(P) --translate
 
 publish: ## 发布文章到线上 用法: make publish [P=autogen-pse]
 	$(PY) tasks/project-articles/publish.py $(P) $(FLAGS)

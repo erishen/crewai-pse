@@ -57,7 +57,7 @@ def _parse_output(stdout: str) -> dict:
     return info
 
 
-def _add_cross_links(articles_dir: Path, slug: str, pub_info: dict) -> None:
+def _add_cross_links(articles_dir: Path, slug: str, slug_zh: str, slug_en: str, pub_info: dict) -> None:
     """在文章 frontmatter 后插入对方语言的链接。"""
     if "zh" not in pub_info or "en" not in pub_info:
         return  # 只有一篇文章时不需要交叉链接
@@ -65,11 +65,16 @@ def _add_cross_links(articles_dir: Path, slug: str, pub_info: dict) -> None:
     zh_link = pub_info["zh"]["link"]
     en_link = pub_info["en"]["link"]
 
-    for lang, other_link, link_text in [
-        ("zh", en_link, "> [🇬🇧 English Version]({})"),
-        ("en", zh_link, "> [🇨🇳 中文版]({})"),
+    for lang, other_link, link_text, lang_slug in [
+        ("zh", en_link, "> [🇬🇧 English Version]({})", slug_zh),
+        ("en", zh_link, "> [🇨🇳 中文版]({})", slug_en),
     ]:
-        article_path = articles_dir / lang / f"{slug}.md"
+        article_path = articles_dir / lang / f"{lang_slug}.md"
+        # 兼容旧文件名
+        if not article_path.exists():
+            legacy = articles_dir / lang / f"{slug}.md"
+            if legacy.exists():
+                article_path = legacy
         if not article_path.exists():
             continue
 
@@ -104,8 +109,37 @@ def _add_cross_links(articles_dir: Path, slug: str, pub_info: dict) -> None:
         print(f"  🔗 已更新 {lang} 文章的交叉链接")
 
 
+def _fetch_post_title(link: str) -> str | None:
+    """从 WordPress 按链接 slug 获取文章真实标题（用于链接页面展示）。"""
+    import urllib.request
+    import urllib.parse
+    import json
+    import base64
+
+    slug = link.rstrip("/").split("/")[-1]
+    if not slug:
+        return None
+    try:
+        url = f"{WP_API_URL}/posts?slug={urllib.parse.quote(slug)}&per_page=1"
+        req = urllib.request.Request(url)
+        auth = base64.b64encode(f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()).decode()
+        req.add_header("Authorization", f"Basic {auth}")
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode())
+            if isinstance(data, list) and data:
+                return data[0].get("title", {}).get("rendered")
+    except Exception as e:
+        print(f"  ⚠️ 获取文章真实标题失败：{e}")
+    return None
+
+
 def _update_links_page(project_key: str, pub_info: dict) -> None:
-    """更新链接页面，添加新发布的文章。"""
+    """更新链接页面，添加或更新新发布的文章。
+
+    链接文字使用文章在 WordPress 上的【真实标题】（完整、不截断），
+    而非 projects.json 的 desc，避免链接页文字与文章标题不一致。
+    已存在的链接会更新其锚点文字（幂等），不存在才在列表头部插入。
+    """
     if not WP_APP_PASSWORD:
         print("  ⚠️ 未设置 WP_APP_PASSWORD，跳过链接页面更新")
         return
@@ -115,59 +149,69 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
 
     import urllib.request
     import urllib.error
+    import json
+    import base64
     from datetime import date
 
-    # 获取文章标题（从 projects.json 的 desc 字段）
-    projects = _load_projects()
-    proj = projects.get(project_key, {})
-    title = proj.get("desc", project_key)
-    # 截取前 30 个字符作为显示标题
-    if len(title) > 30:
-        title = title[:30] + "..."
-
     link = pub_info["zh"]["link"]
+
+    # 优先使用文章在 WordPress 上的真实标题
+    title = _fetch_post_title(link)
+    if not title:
+        # 兜底：用 projects.json 的 desc（不再截断），避免覆盖成空白
+        projects = _load_projects()
+        title = projects.get(project_key, {}).get("desc", project_key)
+
     month = date.today().strftime("%Y-%m")
 
-    # 获取当前链接页面内容
+    # 获取当前链接页面原始内容（context=edit 拿到 raw，避免实体被二次转义）
     try:
-        url = f"{WP_API_URL}/pages/{LINKS_PAGE_ID}"
+        url = f"{WP_API_URL}/pages/{LINKS_PAGE_ID}?context=edit"
         req = urllib.request.Request(url)
-        req.add_header("Authorization", f"Basic {__import__('base64').b64encode(f'{WP_USERNAME}:{WP_APP_PASSWORD}'.encode()).decode()}")
+        auth = base64.b64encode(f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()).decode()
+        req.add_header("Authorization", f"Basic {auth}")
         with urllib.request.urlopen(req) as resp:
             page_data = json.loads(resp.read().decode())
-            current_content = page_data.get("content", {}).get("rendered", "")
+            current_content = page_data.get("content", {}).get("raw", "")
     except Exception as e:
         print(f"  ⚠️ 获取链接页面失败：{e}")
         return
 
-    # 检查是否已存在该链接
-    if link in current_content:
-        print("  ℹ️ 链接页面已包含该文章，跳过更新")
-        return
-
-    # 在第一个 <li> 前插入新文章
-    new_item = f'<li style="margin-bottom:8px;"><span style="color:#9ca3af;">[{month}]</span> <a href="{link}" style="color:#374151;text-decoration:none;">{title}</a> <span style="color:#9ca3af;font-size:12px;">(AI)</span></li>\n'
-
-    # 找到第一个 <li> 的位置
-    first_li = current_content.find("<li")
-    if first_li != -1:
-        new_content = current_content[:first_li] + new_item + current_content[first_li:]
+    # 若链接已存在，更新其锚点文字（幂等）；否则在列表头部插入新条目
+    href_pattern = re.compile(
+        r'(<a href="' + re.escape(link) + r'"[^>]*>)[^<]*(</a>)'
+    )
+    if href_pattern.search(current_content):
+        new_content = href_pattern.sub(
+            lambda m: m.group(1) + title + m.group(2), current_content
+        )
+        print("  🔄 链接页面已存在该文章，已更新其标题文字")
     else:
-        # 如果没有 <li>，在 <ul> 后插入
-        first_ul = current_content.find("<ul")
-        if first_ul != -1:
-            close_tag = current_content.find(">", first_ul)
-            new_content = current_content[:close_tag+1] + "\n" + new_item + current_content[close_tag+1:]
+        new_item = (
+            f'<li style="margin-bottom:8px;">'
+            f'<span style="color:#9ca3af;">[{month}]</span> '
+            f'<a href="{link}" style="color:#374151;text-decoration:none;">{title}</a> '
+            f'<span style="color:#9ca3af;font-size:12px;">(AI)</span></li>\n'
+        )
+        first_li = current_content.find("<li")
+        if first_li != -1:
+            new_content = current_content[:first_li] + new_item + current_content[first_li:]
         else:
-            print("  ️ 无法找到链接列表位置")
-            return
+            first_ul = current_content.find("<ul")
+            if first_ul != -1:
+                close_tag = current_content.find(">", first_ul)
+                new_content = current_content[:close_tag + 1] + "\n" + new_item + current_content[close_tag + 1:]
+            else:
+                print("  ️ 无法找到链接列表位置")
+                return
 
     # 更新页面
     try:
         update_url = f"{WP_API_URL}/pages/{LINKS_PAGE_ID}"
         data = json.dumps({"content": new_content}).encode()
         req = urllib.request.Request(update_url, data=data, method="POST")
-        req.add_header("Authorization", f"Basic {__import__('base64').b64encode(f'{WP_USERNAME}:{WP_APP_PASSWORD}'.encode()).decode()}")
+        auth = base64.b64encode(f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()).decode()
+        req.add_header("Authorization", f"Basic {auth}")
         req.add_header("Content-Type", "application/json")
         with urllib.request.urlopen(req) as resp:
             print(f"  ✅ 已更新链接页面")
@@ -222,6 +266,8 @@ def main():
 
     project_key = args[0]
     slug = project_key.replace("-", "_")
+    slug_zh = f"{slug}-zh"
+    slug_en = f"{slug}-en"
 
     # 检查 wordpress-tools 路径
     if not WP_TOOLS_DIR or not WP_TOOLS_DIR.exists():
@@ -239,12 +285,19 @@ def main():
     pub_info = {}  # { "zh": {"link": ..., "wp_id": ...}, "en": {...} }
 
     for lang in ("zh", "en"):
-        article_path = ARTICLES_DIR / lang / f"{slug}.md"
+        lang_slug = slug_zh if lang == "zh" else slug_en
+        article_path = ARTICLES_DIR / lang / f"{lang_slug}.md"
+        # 兼容旧文件名（无语言后缀）
+        if not article_path.exists():
+            legacy_path = ARTICLES_DIR / lang / f"{slug}.md"
+            if legacy_path.exists():
+                article_path = legacy_path
+                lang_slug = slug
         if not article_path.exists():
             print(f"  ⏭️  {lang} 文章不存在，跳过: {article_path}")
             continue
 
-        result = _publish_article(WP_TOOLS_DIR, f"{slug}.md", lang, prod)
+        result = _publish_article(WP_TOOLS_DIR, f"{lang_slug}.md", lang, prod)
         if result:
             pub_info[lang] = result
             published += 1
@@ -254,10 +307,11 @@ def main():
     # 添加交叉语言链接并重新发布
     if len(pub_info) == 2:
         print("\n🔗 添加交叉语言链接...")
-        _add_cross_links(ARTICLES_DIR, slug, pub_info)
+        _add_cross_links(ARTICLES_DIR, slug, slug_zh, slug_en, pub_info)
         # 重新发布以更新内容
         for lang in ("zh", "en"):
-            result = _publish_article(WP_TOOLS_DIR, f"{slug}.md", lang, prod)
+            lang_slug = slug_zh if lang == "zh" else slug_en
+            result = _publish_article(WP_TOOLS_DIR, f"{lang_slug}.md", lang, prod)
             if result:
                 pub_info[lang] = result
 
