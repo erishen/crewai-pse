@@ -53,6 +53,28 @@ def _clean_code_block_whitespace(text: str) -> str:
     return "\n".join(result)
 
 
+def _src_mirror(src: Path, dst: Path) -> None:
+    """把目标项目源码镜像进沙箱内目录，供 LLM 经 read_file 读取。
+
+    read_file 沙箱限定在 crewai-pse 仓库根（见 crewai_pse/tools.py 的
+    _PROJECT_ROOT），无法直接读取 frameworks/langgraph-pse 等外部目录。
+    这里把真实源码复制进 crewai-pse 内的缓存目录，使 LLM 仍能经 read_file
+    读取目标项目；dst 即"项目仓库根"，nav 链接的相对路径因此保持正确。
+    """
+    EXCLUDE_DIRS = {".venv", "__pycache__", ".git", "node_modules", ".src_cache"}
+    EXCLUDE_NAMES = {".env", ".env.example", ".env.local"}
+    for path in sorted(src.rglob("*")):
+        rel = path.relative_to(src)
+        if any(part in EXCLUDE_DIRS for part in rel.parts):
+            continue
+        if path.name in EXCLUDE_NAMES:
+            continue
+        if path.is_file():
+            target = dst / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+
+
 # 全站统一的 WordPress 标签（避免孤立标签）。中英文各自一套。
 # 改这里即可调整所有文章的标签。
 STANDARD_TAGS_ZH = ["AI助手", "架构设计", "开源工具"]
@@ -420,6 +442,20 @@ def main():
     project_key = args[0]
     p = projects[project_key]
     source_dir = ROOT / p["source_dir"]
+    if not source_dir.exists():
+        print(f"❌ 源码目录不存在: {source_dir}")
+        print("请检查 projects.json 中该项目的 source_dir，或 PSE_ROOT 环境变量是否指向仓库根。")
+        sys.exit(1)
+
+    # 镜像目标项目源码进沙箱缓存：read_file 沙箱限定在 crewai-pse 仓库根，
+    # 无法直接读取 frameworks/langgraph-pse 等外部目录。镜像后 LLM 经 read_file
+    # 读取缓存目录（即项目仓库根），nav 链接相对路径仍正确。
+    sandbox_dir = BASE / ".src_cache" / project_key
+    if sandbox_dir.exists():
+        shutil.rmtree(sandbox_dir)
+    sandbox_dir.mkdir(parents=True, exist_ok=True)
+    _src_mirror(source_dir, sandbox_dir)
+    print(f"📂 已镜像源码到沙箱: {sandbox_dir}")
     slug = project_key.replace("-", "_")
     slug_zh = f"{slug}-zh"
     slug_en = f"{slug}-en"
@@ -460,7 +496,7 @@ def main():
 ## 项目信息
 - GitHub: {p['repo']}
 - 核心卖点: {p['highlights']}
-- 源码目录: {source_dir}（仅用于 read_file，不要在提纲或文章中暴露此路径）
+- 源码目录: {sandbox_dir}（这是该项目的仓库根目录，仅供 read_file 读取；文章中引用文件路径请用相对此目录的路径，如 `src/langgraph_pse/graph.py`，不要暴露此目录本身，也不要带 frameworks/ 前缀）
 
 ## 你的任务
 1. 用 read_file 读取源码目录下的关键文件（README.md + 核心 .py 文件）
@@ -519,7 +555,7 @@ def main():
                 description=f"""读源码，写文章草稿。
 
 读这些文件（用 read_file，不要读更多）: {files_str}
-源码目录: {source_dir}
+源码目录（即项目仓库根）: {sandbox_dir}
 对应章节: {sections_str or '根据提纲判断'}
 提纲: {outline_path}（用 read_file 读取）
 

@@ -5,3 +5,4 @@ outputs/
 .venv
 .crewai/
 projects.json
+.src_cache/
