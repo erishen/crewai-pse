@@ -138,7 +138,7 @@ def _load_projects() -> dict:
 
 
 def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str]]:
-    """程序化验证：grep 检查代码引用是否存在。返回 (虚构列表, 正确列表)。"""
+    """程序化验证：grep 检查代码引用 + 环境变量 + 安装命令 + CLI 入口点。返回 (虚构列表, 正确列表)。"""
     refs = set(re.findall(r"`([A-Za-z_][\w._]*(?:/[A-Za-z_][\w._]*)*)`", article))
     for match in re.finditer(r"```(?:python)?\s*\n(.*?)```", article, re.DOTALL):
         for line in match.group(1).split("\n"):
@@ -213,6 +213,69 @@ def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str
         for p in path_refs:
             if not (source_dir / p.lstrip("/")).exists() and not (source_dir.parent / p.lstrip("/")).exists():
                 fictitious.append(f"[命令] {cmd.strip()[:60]} (路径不存在)")
+
+    # ── 环境变量名核查 ──
+    # 从 .env.example 提取真实变量名，与文章中的 export/X= 比对
+    env_example = source_dir / ".env.example"
+    if env_example.exists():
+        real_vars = set()
+        for line in env_example.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                var_name = line.split("=", 1)[0].strip()
+                real_vars.add(var_name)
+        # 也提取注释里的变量（如 # AGNES_KEY=...）
+        for line in env_example.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"#\s*(\w+)=", line)
+            if m:
+                real_vars.add(m.group(1))
+        # 检查文章中出现的 export XXX 和 XXX=yyy 格式
+        article_vars = set()
+        for m in re.finditer(r"export\s+(\w+)", article):
+            article_vars.add(m.group(1))
+        for m in re.finditer(r"^(\w+)=\S+", article, re.MULTILINE):
+            var = m.group(1)
+            if var.isupper() or var.startswith(("OPENAI_", "AGNES_", "PSE_", "CRM_")):
+                article_vars.add(var)
+        for var in sorted(article_vars):
+            if var in real_vars:
+                verified.append(f"{var} (环境变量存在于 .env.example)")
+            else:
+                fictitious.append(f"[环境变量] {var} 不在 .env.example 中，可能是虚构的")
+
+    # ── 安装命令核查 ──
+    # 检查 pip install <pkg> 是否匹配 pyproject.toml 中的 name
+    pyproject = source_dir / "pyproject.toml"
+    if pyproject.exists():
+        content = pyproject.read_text(encoding="utf-8")
+        m = re.search(r'name\s*=\s*"([^"]+)"', content)
+        if m:
+            real_pkg_name = m.group(1)
+            # 检查文章中的 pip install 命令
+            for pip_match in re.finditer(r"pip\s+install\s+(\S+)", article):
+                claimed_pkg = pip_match.group(1)
+                if claimed_pkg == real_pkg_name:
+                    verified.append(f"pip install {claimed_pkg} (匹配 pyproject.toml)")
+                else:
+                    fictitious.append(
+                        f"[安装] pip install {claimed_pkg} 与 pyproject.toml name={real_pkg_name} 不匹配"
+                    )
+        # 检查是否应该用 uv sync 而非 pip install
+        if (source_dir / "uv.lock").exists() and "pip install" in article:
+            fictitious.append("[安装] 项目使用 uv 管理（存在 uv.lock），文章中不应出现 pip install，应改为 uv sync")
+
+    # ── CLI 入口点核查 ──
+    # 检查 python -m <module> 是否有对应的 __main__.py
+    for m in re.finditer(r"python\s+-m\s+(\S+)", article):
+        module_path = m.group(1).replace(".", "/")
+        main_file = source_dir / "src" / module_path / "__main__.py"
+        if main_file.exists():
+            verified.append(f"python -m {m.group(1)} (入口点存在)")
+        else:
+            # 也检查 tasks/ 下的 run.py
+            alt_file = source_dir / "tasks" / module_path / "run.py"
+            if not alt_file.exists():
+                fictitious.append(f"[CLI] python -m {m.group(1)} 入口点不存在，无 __main__.py")
 
     # 描述夸大检查
     for keyword, reason in EXAGGERATED_TERMS.items():
