@@ -23,12 +23,32 @@ def read_file(path: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
+# 危险命令片段黑名单（命中即拒绝，降低被诱导执行破坏命令的风险）
+_DANGEROUS_PATTERNS = [
+    r"\brm\s+-rf\b", r"\brm\s+-fr\b", r"\brm\s+-r\b", r"\brm\s+-R\b",
+    r"\bmkfs\b", r"\bdd\b\s+if=", r":\(\)\s*\{", r"\bshutdown\b",
+    r"\breboot\b", r"\bhalt\b", r"\bpoweroff\b", r">\s*/dev/sd",
+    r"\bchmod\b\s+-R\s+777\s+/", r"\bchown\b\s+-R\s+.*\s+/",
+    r"curl\b[^\n]*\|\s*(sh|bash)", r"wget\b[^\n]*\|\s*(sh|bash)",
+    r"\bnc\b[^\n]*-e\b",
+]
+
+
 @tool("run_bash")
 def run_bash(command: str) -> str:
-    """执行 bash 命令并返回输出。"""
+    """执行 bash 命令并返回输出（受限沙箱：禁止破坏性命令，工作目录限定在项目根内）。"""
+    import re
+
+    for pat in _DANGEROUS_PATTERNS:
+        if re.search(pat, command):
+            return (
+                f"[拒绝] 命令命中危险模式（{pat}），已被沙箱拦截。"
+                "如需执行破坏性操作请人工进行。"
+            )
     try:
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30
+            command, shell=True, capture_output=True, text=True,
+            timeout=30, cwd=str(_PROJECT_ROOT),
         )
         return result.stdout + "\n" + result.stderr
     except Exception as e:
