@@ -1,7 +1,7 @@
 [project]
 name = "crewai-pse"
 version = "0.1.0"
-description = "Planner-Specialist-Evaluator three-role agent framework powered by CrewAI"
+description = "Task-agnostic Planner-Specialist-Evaluator (PSE) multi-agent framework powered by CrewAI; add tasks under tasks/"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
