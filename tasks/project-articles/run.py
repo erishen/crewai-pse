@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -82,20 +81,26 @@ STANDARD_TAGS_EN = ["AI Assistant", "Architecture Design", "Open Source Tool"]
 
 
 def _strip_outer_fence(text: str) -> str:
-    """去掉模型偶尔加在最外层的 ```markdown ... ``` 包裹。
+    """去掉模型偶尔加在最外层的 ```markdown ... ``` 包裹（含残缺情形）。
 
-    WordPress 发布时会把整个内容当代码块渲染，必须剥掉。只在整体以
-    ``` 开头且以 ``` 结尾时剥离（正常文章以 frontmatter 的 --- 开头，不受影响）。
+    WordPress 发布时会把整个内容当代码块渲染，必须剥掉。
+
+    覆盖两种情形：
+    - 成对包裹：整体以 ``` 开头且以 ``` 结尾 → 首尾围栏都剥。
+    - 残缺包裹：只有开头 ```markdown、结尾忘记闭合 → 只剥首行围栏即可
+      （正文中其余 ``` 代码块保持不动）。
+
+    正常文章以 frontmatter 的 --- 开头，首行不是围栏，不受影响。
     """
     t = text.strip()
-    if t.startswith("```") and t.endswith("```"):
-        lines = t.split("\n")
-        if lines and lines[0].lstrip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        t = "\n".join(lines).strip()
-    return t
+    lines = t.split("\n")
+    # 剥首行围栏（成对 / 只有开头 两种情形都覆盖）
+    if lines and lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+    # 剥结尾闭合围栏（仅当存在，处理成对情形）
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 def _fix_frontmatter_slug(text: str, suffix: str = "") -> str:
@@ -599,7 +604,11 @@ def main():
     print(f"📦 文件分 {len(batches)} 批: {batch_summary}")
 
     # ── Phase 2: 分批写作 + 合并 ──
-    tmpdir = tempfile.mkdtemp(prefix="pse_")
+    # 临时目录必须建在仓库根内：read_file 沙箱限定 _PROJECT_ROOT（Makefile 从 crewai-pse 根运行 → cwd=根），
+    # 若用系统临时目录 /var/folders/... 会触发「路径超出项目范围」被拦截，导致提纲/草稿读不到、文章写不出。
+    crewai_root = Path(__file__).resolve().parent.parent.parent
+    tmpdir = crewai_root / ".pse_tmp" / f"run_{os.getpid()}"
+    tmpdir.mkdir(parents=True, exist_ok=True)
     try:
         crew2 = create_crew(task="project-articles")
         # 把提纲写到临时文件，避免内联在 task description 中撑大上下文

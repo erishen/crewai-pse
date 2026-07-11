@@ -6,3 +6,4 @@ outputs/
 .crewai/
 projects.json
 .src_cache/
+.pse_tmp/
