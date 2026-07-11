@@ -254,14 +254,16 @@ uv sync            # 或：make install
 
 ## 与同级框架的关系
 
-三者都共享 **PSE 角色模型** 与 **核查→修正循环**，区别在于编排层：
+四者都共享 **PSE 角色模型** 与 **核查→修正循环**，区别在于编排层：
 
-| | `autogen-pse` | `crewai-pse` | `langgraph-pse` |
-|---|---|---|---|
-| 编排方式 | 两段式直接 API（建任务 → 写作 → grep 核查 → 修正） | CrewAI `Sequential`（Planner → Specialist）+ 程序化核查 | LangGraph 状态图（Planner → Specialist → Evaluator → Fix）+ verify-retry 重试 |
-| 任务模型 | 任务专属脚本 | **任务无关引擎 + `tasks/` 文件夹** | 任务无关引擎 + `tasks/` 文件夹 |
-| 单次成本 | 约 ¥0.01 | 约 ¥0.05–0.10 | 取决于 provider |
-| 适用场景 | 廉价、高频的草稿 | 需要更丰富多智能体编排时 | 需要显式状态控制 + 防幻觉闸门的流程 |
+| | `autogen-pse` | `crewai-pse` | `langgraph-pse` | `llamaindex-pse` |
+|---|---|---|---|---|
+| 编排方式 | 两段式直接 API（建任务 → 写作 → grep 核查 → 修正） | **CrewAI `Sequential`**（Planner → Specialist）+ 程序化核查 | LangGraph 状态图 + verify-retry 重试 | LlamaIndex `Workflow` + `@step` + Event |
+| 任务模型 | 任务专属脚本 | **任务无关引擎 + `tasks/` 文件夹** | 任务无关引擎 + `tasks/` 文件夹 | 任务无关引擎 + `tasks/` 文件夹 |
+| RAG | 可选 | — | — | **内置**（`retriever`，源头接地） |
+| 单次成本 | 约 ¥0.01 | 约 ¥0.05–0.10 | 零（确定性）/ 便宜（`--llm`） | 取决于 provider |
+| 实际用途 | asset-lens → 下周投资建议 | **项目代码 → 中英文章 → WordPress** | CRM 数据质量 QA + 每周关系复盘 | 简历定制（RAG） |
+| 适用场景 | 廉价、高频的草稿 | 需要更丰富多智能体编排时 | 需要显式状态控制 + 防幻觉闸门的流程 | RAG 接地生成 |
 
 ## 许可证
 

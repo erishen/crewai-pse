@@ -254,14 +254,16 @@ uv sync            # or: make install
 
 ## Relation to Sibling Frameworks
 
-All three share the **PSE role model** and a **verify→fix loop**, but differ in orchestration:
+All four share the **PSE role model** and a **verify→fix loop**, but differ in orchestration:
 
-| | `autogen-pse` | `crewai-pse` | `langgraph-pse` |
-|---|---|---|---|
-| Orchestration | Direct two-stage API (build → write → grep-check → fix) | CrewAI `Sequential` (Planner → Specialist) + programmatic verify | LangGraph state graph (Planner → Specialist → Evaluator → Fix) + verify-retry |
-| Task model | Task-specific script | **Task-agnostic engine + `tasks/` folder** | Task-agnostic engine + `tasks/` folder |
-| Cost / run | ~¥0.01 | ~¥0.05–0.10 | depends on provider |
-| Best for | Cheap, frequent drafts | Richer multi-agent version when needed | Workflows needing explicit state control + anti-hallucination gates |
+| | `autogen-pse` | `crewai-pse` | `langgraph-pse` | `llamaindex-pse` |
+|---|---|---|---|---|
+| Orchestration | Direct two-stage API (build → write → grep-check → fix) | **CrewAI `Sequential`** (Planner → Specialist) + programmatic verify | LangGraph state graph + verify-retry | LlamaIndex `Workflow` + `@step` + Event |
+| Task model | Task-specific script | **Task-agnostic engine + `tasks/` folder** | Task-agnostic engine + `tasks/` folder | Task-agnostic engine + `tasks/` folder |
+| RAG | optional | — | — | **built-in** (`retriever`, source-grounded) |
+| Cost / run | ~¥0.01 | ~¥0.05–0.10 | zero (deterministic) / cheap (`--llm`) | depends on provider |
+| Reference use | asset-lens → next-week investment advice | **project code → bilingual article → WordPress** | CRM data-quality QA + weekly relationship review | résumé tailoring (RAG) |
+| Best for | Cheap, frequent drafts | Richer multi-agent publishing | Explicit state control + anti-hallucination gates | RAG-grounded generation |
 
 ## License
 
