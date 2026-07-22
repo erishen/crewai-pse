@@ -24,3 +24,8 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# run.py 内含大量中文 prompt 文本（三引号 f-string 与提示词列表），
+# 断行会改变喂给 LLM 的提示内容、破坏防跑题机制，故对该文件豁免行长检查。
+"tasks/project-articles/run.py" = ["E501"]

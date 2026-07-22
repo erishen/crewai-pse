@@ -6,15 +6,26 @@ from pathlib import Path
 
 from crewai.tools import tool
 
-# 项目根目录，限制文件访问范围
+# 项目根目录，限制文件访问范围（run_bash 的工作目录与范围判定用此值）
 _PROJECT_ROOT = Path(os.getenv("PSE_ROOT", Path.cwd())).resolve()
+
+# read_file 允许的读取根目录集合。默认仅项目根；运行具体项目时由 run.py
+# 调用 set_read_roots() 收紧为「镜像后的项目源码目录 + 提纲临时目录」，
+# 使 Specialist 物理上读不到 crewai-pse 框架自身代码（避免文章跑题写成框架方法论）。
+_READ_ROOTS = [_PROJECT_ROOT]
+
+
+def set_read_roots(roots) -> None:
+    """运行时收紧/放宽 read_file 的沙箱范围。roots 为路径或可解析为路径的对象列表。"""
+    global _READ_ROOTS
+    _READ_ROOTS = [Path(r).resolve() for r in roots]
 
 
 @tool("read_file")
 def read_file(path: str) -> str:
-    """读取文件内容。参数 path 为文件路径（限定在项目目录内）。"""
+    """读取文件内容。参数 path 为文件路径（限定在 set_read_roots() 设定的允许目录内）。"""
     p = Path(path).resolve()
-    if not str(p).startswith(str(_PROJECT_ROOT)):
+    if not any(str(p).startswith(str(r)) for r in _READ_ROOTS):
         return f"[错误] 路径超出项目范围: {path}"
     if not p.exists():
         return f"[错误] 文件不存在: {path}"

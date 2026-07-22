@@ -106,6 +106,24 @@ def create_evaluator(task: str | None = None) -> Agent:
     )
 
 
+def create_writer(task: str | None = None) -> Agent:
+    """纯写作 Agent：不带任何文件读取工具。
+
+    用于消除『Specialist 读源码 + 写文章』一步法导致的思考链泄漏
+    （模型把「让我先读取…」这类工具调用前的独白当成正文输出）。
+    Writer 只能基于任务描述中由程序喂入的真实源码片段写作，物理上无法调用 read_file。
+    """
+    return Agent(
+        role="Writer",
+        goal="基于提供的真实源码片段，按指定结构撰写技术文章；所有代码引用必须来自素材，绝不编造或自行读取文件",
+        backstory="你是一名严谨的技术写作者，只使用上下文中给出的真实代码片段，绝不编造或自行读取文件。",
+        llm=_create_llm(),
+        tools=[],
+        verbose=True,
+        allow_delegation=False,
+    )
+
+
 def create_crew(task: str | None = None) -> Crew:
     """创建 PSE 三角色 Crew（Sequential 流程）。
 

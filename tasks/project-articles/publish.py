@@ -111,10 +111,10 @@ def _add_cross_links(articles_dir: Path, slug: str, slug_zh: str, slug_en: str, 
 
 def _fetch_post_title(link: str) -> str | None:
     """从 WordPress 按链接 slug 获取文章真实标题（用于链接页面展示）。"""
-    import urllib.request
-    import urllib.parse
-    import json
     import base64
+    import json
+    import urllib.parse
+    import urllib.request
 
     slug = link.rstrip("/").split("/")[-1]
     if not slug:
@@ -147,10 +147,10 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
     if "zh" not in pub_info:
         return  # 只有中文文章才添加到链接页面
 
-    import urllib.request
-    import urllib.error
-    import json
     import base64
+    import json
+    import urllib.error
+    import urllib.request
     from datetime import date
 
     link = pub_info["zh"]["link"]
@@ -214,7 +214,7 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
         req.add_header("Authorization", f"Basic {auth}")
         req.add_header("Content-Type", "application/json")
         with urllib.request.urlopen(req) as resp:
-            print(f"  ✅ 已更新链接页面")
+            print("  ✅ 已更新链接页面")
     except Exception as e:
         print(f"  ️ 更新链接页面失败：{e}")
 

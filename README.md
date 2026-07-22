@@ -262,7 +262,7 @@ All four share the **PSE role model** and a **verify→fix loop**, but differ in
 | Task model | Task-specific script | **Task-agnostic engine + `tasks/` folder** | Task-agnostic engine + `tasks/` folder | Task-agnostic engine + `tasks/` folder |
 | RAG | optional | — | — | **built-in** (`retriever`, source-grounded) |
 | Cost / run | ~¥0.01 | ~¥0.05–0.10 | zero (deterministic) / cheap (`--llm`) | depends on provider |
-| Reference use | asset-lens → next-week investment advice | **project code → bilingual article → WordPress** | CRM data-quality QA + weekly relationship review | résumé tailoring (RAG) |
+| Reference use | asset data → periodic analysis advice | **project code → bilingual article → WordPress** | structured-data quality QA + periodic review | document tailoring (RAG-grounded) |
 | Best for | Cheap, frequent drafts | Richer multi-agent publishing | Explicit state control + anti-hallucination gates | RAG-grounded generation |
 
 ## License
