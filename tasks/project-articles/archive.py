@@ -19,14 +19,19 @@ load_dotenv(BASE.parent.parent / ".env")
 ARTICLES_DIR = Path(os.getenv("ARTICLES_DIR", ""))
 WP_TOOLS_DIR = Path(os.getenv("WP_TOOLS_DIR", ""))
 PROJECTS_FILE = BASE / "projects.json"
+PUBLISHED_FILE = BASE / "projects-published.json"
 
 
 def _load_projects() -> dict:
-    if not PROJECTS_FILE.exists():
-        print(f"❌ 找不到项目配置文件: {PROJECTS_FILE}")
-        sys.exit(1)
-    with open(PROJECTS_FILE, encoding="utf-8") as f:
-        return json.load(f)
+    pending = {}
+    if PROJECTS_FILE.exists():
+        with open(PROJECTS_FILE, encoding="utf-8") as f:
+            pending = json.load(f)
+    published = {}
+    if PUBLISHED_FILE.exists():
+        with open(PUBLISHED_FILE, encoding="utf-8") as f:
+            published = json.load(f)
+    return {**published, **pending}
 
 
 def main():

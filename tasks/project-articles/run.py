@@ -34,6 +34,7 @@ ARTICLES_DIR = Path(os.getenv("ARTICLES_DIR", str(ROOT / "articles" / "pse")))
 
 # 从 projects.json 加载项目配置（已加入 .gitignore，不上传）
 PROJECTS_FILE = BASE / "projects.json"
+PUBLISHED_FILE = BASE / "projects-published.json"
 
 # crewai-pse 框架自身的内部符号。若文章里出现这些，说明 Specialist 跑题
 # 写了「框架方法论」而非目标项目本身（某次 Specialist 跑题事故的根因）。
@@ -135,19 +136,27 @@ def _set_frontmatter_tags(text: str, tags: list[str]) -> str:
 
 
 def _load_projects() -> dict:
-    if not PROJECTS_FILE.exists():
-        print(f"❌ 找不到项目配置文件: {PROJECTS_FILE}")
+    pending = {}
+    if PROJECTS_FILE.exists():
+        with open(PROJECTS_FILE, encoding="utf-8") as f:
+            pending = json.load(f)
+    published = {}
+    if PUBLISHED_FILE.exists():
+        with open(PUBLISHED_FILE, encoding="utf-8") as f:
+            published = json.load(f)
+    # 待写队列优先（理论上两文件不会重名）；合并后任一项目名都可被生成/重跑
+    projects = {**published, **pending}
+    if not projects:
+        print(f"❌ 找不到项目配置文件: {PROJECTS_FILE} / {PUBLISHED_FILE}")
         print("请从 projects.json.example 复制并填写实际配置")
         sys.exit(1)
-    with open(PROJECTS_FILE, encoding="utf-8") as f:
-        projects = json.load(f)
 
     # schema 校验
     required_keys = {"repo", "desc", "highlights", "source_dir"}
     for name, cfg in projects.items():
         missing = required_keys - set(cfg.keys())
         if missing:
-            print(f"❌ projects.json [{name}] 缺少字段: {', '.join(missing)}")
+            print(f"❌ [{name}] 缺少字段: {', '.join(missing)}")
             sys.exit(1)
     return projects
 
@@ -156,7 +165,8 @@ def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str
     """程序化验证：grep 检查代码引用 + 环境变量 + 安装命令 + CLI 入口点。返回 (虚构列表, 正确列表)。"""
     refs = set(re.findall(r"`([A-Za-z_][\w._]*(?:/[A-Za-z_][\w._]*)*)`", article))
     # 代码块内提取：def/class 定义、import 目标、函数调用（snake_case_with_underscore 或 CamelCase）
-    for block in re.finditer(r"```(?:python)?\s*\n(.*?)```", article, re.DOTALL):
+    # 支持 Python 和 JS/TS 代码块
+    for block in re.finditer(r"```(?:python|typescript|ts|javascript|js|tsx|jsx)?\s*\n(.*?)```", article, re.DOTALL):
         for line in block.group(1).split("\n"):
             # def/class 定义
             m = re.match(r"^\s*(?:def|class)\s+(\w+)", line)
@@ -184,6 +194,31 @@ def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str
                 name = cm.group(1)
                 if len(name) >= 3:
                     refs.add(name)
+            # JS/TS: function name( / const name = / class Name / interface Name
+            m = re.match(r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)", line)
+            if m:
+                refs.add(m.group(1))
+                continue
+            m = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)", line)
+            if m:
+                refs.add(m.group(1))
+                continue
+            m = re.match(r"^\s*(?:export\s+)?(?:default\s+)?class\s+(\w+)", line)
+            if m:
+                refs.add(m.group(1))
+                continue
+            m = re.match(r"^\s*(?:export\s+)?interface\s+(\w+)", line)
+            if m:
+                refs.add(m.group(1))
+                continue
+            # JS/TS: import { X, Y } from '...'  → 提取每个导入名
+            m = re.match(r"^\s*import\s+\{(.+?)\}\s+from", line)
+            if m:
+                for part in re.split(r"[,\s]+", m.group(1)):
+                    part = part.strip()
+                    if part and part != "as" and part != "type":
+                        refs.add(part.split(" as ")[0].strip())
+                continue
 
     # Python 关键字和内置名称，不应作为项目代码引用检查
     PYTHON_KEYWORDS = {
@@ -201,36 +236,60 @@ def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str
         "Callable", "Iterable", "Iterator", "Generator", "Sequence",
     }
 
+    # JS/TS 关键字和内置名称，不应作为项目代码引用检查
+    JS_TS_KEYWORDS = {
+        "const", "let", "var", "function", "return", "if", "else",
+        "for", "while", "do", "switch", "case", "break", "continue",
+        "try", "catch", "finally", "throw", "new", "delete", "typeof",
+        "instanceof", "void", "this", "super", "class", "extends",
+        "import", "from", "export", "default", "async", "await",
+        "yield", "static", "get", "set", "public", "private",
+        "protected", "readonly", "interface", "type", "enum",
+        "namespace", "module", "declare", "abstract", "implements",
+        "true", "false", "null", "undefined", "void", "Promise",
+        "console", "window", "document", "require", "module",
+        "exports", "process", "Buffer", "JSON", "Math", "Date",
+        "Array", "Object", "String", "Number", "Boolean", "Symbol",
+        "Map", "Set", "WeakMap", "WeakSet", "Error", "RegExp",
+        "parseInt", "parseFloat", "isNaN", "isFinite", "setTimeout",
+        "setInterval", "clearTimeout", "clearInterval",
+    }
+
+    BUILTIN_KEYWORDS = PYTHON_KEYWORDS | JS_TS_KEYWORDS
+
     fictitious = []
     verified = []
     for ref in sorted(refs):
         if len(ref) < 3 or ref.startswith("http"):
             continue
-        if ref in PYTHON_KEYWORDS:
+        if ref in BUILTIN_KEYWORDS:
             continue
-        # 文件路径 → 递归搜磁盘（搜 .py 和 .md 文件）
-        if "/" in ref or ref.endswith(".py") or ref.endswith(".md"):
+        # 文件路径 → 递归搜磁盘（搜 .py/.md/.ts/.tsx/.js/.jsx 文件）
+        if "/" in ref or ref.endswith((".py", ".md", ".ts", ".tsx", ".js", ".jsx")):
             found = any(
                 f.name == ref.rsplit("/", 1)[-1]
-                for ext in ("*.py", "*.md")
+                for ext in ("*.py", "*.md", "*.ts", "*.tsx", "*.js", "*.jsx")
                 for f in source_dir.rglob(ext)
-                if ".venv" not in str(f) and "__pycache__" not in str(f)
+                if ".venv" not in str(f) and "__pycache__" not in str(f) and "node_modules" not in str(f)
             )
             if found:
                 verified.append(f"{ref} (文件存在)")
             else:
                 fictitious.append(ref)
             continue
-        # 类名/函数名 → grep（排除注释行，搜 .py 和 .md 文件）
+        # 类名/函数名 → grep（排除注释行，搜 .py/.md/.ts/.tsx/.js/.jsx 文件）
         found = False
-        for ext in ("*.py", "*.md"):
+        for ext in ("*.py", "*.md", "*.ts", "*.tsx", "*.js", "*.jsx"):
             for f in source_dir.rglob(ext):
-                if ".venv" in str(f) or "__pycache__" in str(f):
+                if ".venv" in str(f) or "__pycache__" in str(f) or "node_modules" in str(f):
                     continue
                 try:
                     for line in f.read_text(encoding="utf-8").split("\n"):
                         stripped = line.strip()
                         if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
+                            continue
+                        # JS/TS 注释行
+                        if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
                             continue
                         if ref in stripped:
                             found = True
@@ -270,7 +329,8 @@ def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str
                 real_vars.add(m.group(1))
         # 检查文章中出现的 export XXX 和 XXX=yyy 格式
         article_vars = set()
-        for m in re.finditer(r"export\s+(\w+)", article):
+        # 只匹配 shell 风格的 export VARNAME（全大写），跳过 TS 的 export interface/const/function/async
+        for m in re.finditer(r"export\s+([A-Z][A-Z0-9_]*)", article):
             article_vars.add(m.group(1))
         for m in re.finditer(r"^(\w+)=\S+", article, re.MULTILINE):
             var = m.group(1)
@@ -616,15 +676,36 @@ def _extract_real_symbols(source_dir: Path) -> set[str]:
                 stripped = line.strip()
                 if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
                     continue
+                # JS/TS 注释行
+                if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                    continue
+                # Python: def / async def
                 m = re.match(r"^\s*(?:async\s+)?def\s+(\w+)", line)
                 if m:
                     symbols.add(m.group(1).lower())
                     continue
+                # Python: class
                 m = re.match(r"^\s*class\s+(\w+)", line)
                 if m:
                     symbols.add(m.group(1).lower())
                     continue
+                # Python: 全大写常量
                 m = re.match(r"^\s*([A-Z][A-Z0-9_]{2,})\s*=", line)
+                if m:
+                    symbols.add(m.group(1).lower())
+                    continue
+                # JS/TS: function name( / async function name(
+                m = re.match(r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)", line)
+                if m:
+                    symbols.add(m.group(1).lower())
+                    continue
+                # JS/TS: const/let/var name =
+                m = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)", line)
+                if m:
+                    symbols.add(m.group(1).lower())
+                    continue
+                # JS/TS: class Name / interface Name
+                m = re.match(r"^\s*(?:export\s+)?(?:default\s+)?(?:class|interface)\s+(\w+)", line)
                 if m:
                     symbols.add(m.group(1).lower())
     return symbols
@@ -666,7 +747,7 @@ def _parse_batches(outline: str, source_dir: Path) -> list[dict]:
 
     # 回退：从提纲中提取所有提到的文件路径，作为单批次
     all_files = set()
-    for match in re.finditer(r"[\w/]+\.py", outline):
+    for match in re.finditer(r"[\w/]+\.(?:py|ts|tsx|js|jsx|md)", outline):
         f = match.group()
         if (source_dir / f).exists() or any(source_dir.rglob(f)):
             all_files.add(f)
@@ -964,7 +1045,13 @@ def main():
                     continue
                 if len(content) > 6000:
                     content = content[:6000] + "\n# ...(已截断)...\n"
-                source_excerpts.append(f"### 文件: {fpath}\n```python\n{content}\n```")
+                # 根据文件扩展名选择代码块语言
+                ext_lang = {
+                    ".py": "python", ".ts": "typescript", ".tsx": "tsx",
+                    ".js": "javascript", ".jsx": "jsx",
+                }.get(fp.suffix, "")
+                lang_tag = f"{ext_lang}\n" if ext_lang else "\n"
+                source_excerpts.append(f"### 文件: {fpath}\n```{lang_tag}{content}\n```")
         excerpts_block = "\n\n".join(source_excerpts) if source_excerpts else "（无源码片段，仅凭提纲写作）"
 
         # ── F 风格：5 段式逐节生成（程序硬控 H2，杜绝模型自选章节标题）──

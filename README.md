@@ -58,8 +58,9 @@ crewai-pse/
 │       ├── run.py            # Task pipeline (gen + verify + translate)
 │       ├── publish.py        # Publish to WordPress via wordpress-tools
 │       ├── archive.py        # Archive articles into wordpress-tools/articles/
-│       ├── projects.json     # Task config (gitignored)
+│       ├── projects.json     # 待写队列（gitignored）：尚未发文的 projects
 │       ├── projects.json.example
+│       ├── projects-published.json  # 已发存档（gitignored）：发布后由 publish.py 自动写入
 │       └── prompts/
 │           ├── planner.md
 │           ├── specialist.md
@@ -205,7 +206,10 @@ cp tasks/project-articles/projects.json.example tasks/project-articles/projects.
 | `highlights` | Technical highlights to focus on |
 | `source_dir` | Path to source code (relative to `PSE_ROOT`) |
 
-The `published` field is automatically populated after publishing — do not edit manually.
+- `projects.json`：待写队列，列出**尚未发文**的项目。新增要写文章的项目就加到这里。
+- `projects-published.json`：已发存档，发布成功后由 `publish.py` 自动把该项目从左边的待写队列移入此处，并写入 `published` 链接与 wp_id。重新发布已发项目时只更新此文件中的链接。
+
+> 两个文件都被 `.gitignore` 忽略（本地配置）。`published` 字段由 `publish.py` 自动填充与搬运——不要手动编辑。
 
 #### Usage
 

@@ -23,6 +23,7 @@ load_dotenv(BASE.parent.parent / ".env")
 ARTICLES_DIR = Path(os.getenv("ARTICLES_DIR", ""))
 WP_TOOLS_DIR = Path(os.getenv("WP_TOOLS_DIR", ""))
 PROJECTS_FILE = BASE / "projects.json"
+PUBLISHED_FILE = BASE / "projects-published.json"
 
 # WordPress API 配置（用于更新链接页面）
 WP_API_URL = os.getenv("WP_API_URL", "https://your-site.com/wp-json/wp/v2")
@@ -31,18 +32,46 @@ WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
 LINKS_PAGE_ID = int(os.getenv("LINKS_PAGE_ID", "1"))
 
 
-def _load_projects() -> dict:
+def _load_pending() -> dict:
     if not PROJECTS_FILE.exists():
-        print(f"❌ 找不到项目配置文件: {PROJECTS_FILE}")
+        print(f"❌ 找不到待写项目配置文件: {PROJECTS_FILE}")
         sys.exit(1)
     with open(PROJECTS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _save_projects(projects: dict) -> None:
+def _load_published() -> dict:
+    if not PUBLISHED_FILE.exists():
+        return {}
+    with open(PUBLISHED_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_pending(projects: dict) -> None:
     with open(PROJECTS_FILE, "w", encoding="utf-8") as f:
         json.dump(projects, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+def _save_published(projects: dict) -> None:
+    with open(PUBLISHED_FILE, "w", encoding="utf-8") as f:
+        json.dump(projects, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def _get_project_desc(project_key: str) -> str:
+    """跨两个文件查找项目 desc（待写队列优先）。"""
+    if PROJECTS_FILE.exists():
+        with open(PROJECTS_FILE, encoding="utf-8") as f:
+            pending = json.load(f)
+        if project_key in pending:
+            return pending[project_key].get("desc", project_key)
+    if PUBLISHED_FILE.exists():
+        with open(PUBLISHED_FILE, encoding="utf-8") as f:
+            published = json.load(f)
+        if project_key in published:
+            return published[project_key].get("desc", project_key)
+    return project_key
 
 
 def _parse_output(stdout: str) -> dict:
@@ -158,9 +187,8 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
     # 优先使用文章在 WordPress 上的真实标题
     title = _fetch_post_title(link)
     if not title:
-        # 兜底：用 projects.json 的 desc（不再截断），避免覆盖成空白
-        projects = _load_projects()
-        title = projects.get(project_key, {}).get("desc", project_key)
+        # 兜底：用 projects 配置里的 desc（不再截断），避免覆盖成空白
+        title = _get_project_desc(project_key)
 
     month = date.today().strftime("%Y-%m")
 
@@ -258,13 +286,17 @@ def main():
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
     prod = "--local" not in flags
 
-    projects = _load_projects()
-    if not args or args[0] not in projects:
+    pending = _load_pending()
+    published = _load_published()
+    if not args or (args[0] not in pending and args[0] not in published):
         print("用法: python publish.py <项目名> [--local]")
-        print(f"可用项目: {', '.join(projects.keys())}")
+        avail = ", ".join(sorted(set(list(pending) + list(published))))
+        print(f"可用项目: {avail}")
         sys.exit(1)
 
     project_key = args[0]
+    # 待写队列优先；已发存档中的项目名也可重跑（仅更新链接）
+    source = "published" if project_key in published else "pending"
     slug = project_key.replace("-", "_")
     slug_zh = f"{slug}-zh"
     slug_en = f"{slug}-en"
@@ -280,7 +312,7 @@ def main():
         print("❌ ARTICLES_DIR 未设置或目录不存在")
         sys.exit(1)
 
-    published = 0
+    published_count = 0
     failed = 0
     pub_info = {}  # { "zh": {"link": ..., "wp_id": ...}, "en": {...} }
 
@@ -300,7 +332,7 @@ def main():
         result = _publish_article(WP_TOOLS_DIR, f"{lang_slug}.md", lang, prod)
         if result:
             pub_info[lang] = result
-            published += 1
+            published_count += 1
         else:
             failed += 1
 
@@ -320,9 +352,12 @@ def main():
         print("\n 更新链接页面...")
         _update_links_page(project_key, pub_info)
 
-    # 回写链接和 wp_id 到 projects.json
+    # 回写链接和 wp_id；发完后将项目从待写队列移至已发存档
     if pub_info:
-        proj = projects[project_key]
+        if source == "pending":
+            proj = pending[project_key]
+        else:
+            proj = published[project_key]
         proj.setdefault("published", {})
         for lang, info in pub_info.items():
             entry = proj["published"].setdefault(lang, {})
@@ -330,10 +365,21 @@ def main():
                 entry["link"] = info["link"]
             if "wp_id" in info:
                 entry["wp_id"] = info["wp_id"]
-        _save_projects(projects)
-        print("\n📝 已更新 projects.json 中的发布链接")
 
-    print(f"\n📊 发布完成: {published} 成功, {failed} 失败")
+        if source == "pending":
+            # 从待写队列移除，并入已发存档
+            pending.pop(project_key, None)
+            published[project_key] = proj
+            _save_pending(pending)
+            _save_published(published)
+            print(f"\n📝 已发布 {project_key}：已从 projects.json 移至 projects-published.json")
+        else:
+            # 已发项目重新发布，仅更新链接
+            published[project_key] = proj
+            _save_published(published)
+            print("\n📝 已更新 projects-published.json 中的发布链接")
+
+    print(f"\n📊 发布完成: {published_count} 成功, {failed} 失败")
     if failed:
         sys.exit(1)
 
