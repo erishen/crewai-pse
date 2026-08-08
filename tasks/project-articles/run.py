@@ -182,6 +182,64 @@ def _count_faq_blocks(text: str) -> int:
     return len(_FAQ_BLOCK_RE.findall(text))
 
 
+def _extract_frontmatter(text: str):
+    """返回 (frontmatter 含分隔行, 余下正文)。无 frontmatter 则 ('', text)。"""
+    m = re.match(r"^---\n.*?\n---\n?", text, re.DOTALL)
+    if m:
+        return m.group(0), text[m.end():]
+    return "", text
+
+
+_TLDR_BLOCK_RE = re.compile(
+    r"^#{1,4}\s*TL;?DR\b[^\n]*\n+(.*?)(?=\n#{1,4}\s|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_TLDR_BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
+
+
+def _normalize_tldr(text: str, lang: str = "zh") -> str:
+    """归一化 TL;DR 区块，保证 GEO 友好：标题统一 `## TL;DR`、3-5 条要点、置于正文开头。
+
+    1. 识别各种写法（### TL;DR / TL;DR（本文要点） / TL;DR： 等）→ 统一 `## TL;DR`。
+    2. 仅抽取 bullet 形式的要点（- / * / 数字序号），归一为 `- `，上限 5 条。
+    3. 把 TL;DR 块移动到 front matter 之后、正文最前面（AI 引擎优先抽取摘要）。
+    4. 识别不出结构（无 TL;DR / 无可识别要点）时原样返回，不静默丢内容。
+    """
+    fm, body = _extract_frontmatter(text)
+    block_m = _TLDR_BLOCK_RE.search(body)
+    if not block_m:
+        return text
+    bullets = []
+    for line in block_m.group(1).splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        bm = _TLDR_BULLET_RE.match(s)
+        if bm:
+            b = bm.group(1).strip()
+            if b:
+                bullets.append(b)
+    if not bullets:
+        return text
+    bullets = bullets[:5]
+    tldr = "## TL;DR\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
+    before = body[: block_m.start()].rstrip()
+    after = body[block_m.end():].lstrip()
+    rest = (before + "\n\n" + after).strip()
+    if fm:
+        return fm.rstrip() + "\n\n" + tldr + "\n" + rest + "\n"
+    return tldr + "\n" + rest + "\n"
+
+
+def _count_tldr_bullets(text: str) -> int:
+    block_m = _TLDR_BLOCK_RE.search(text)
+    if not block_m:
+        return 0
+    return len(
+        [1 for ln in block_m.group(1).splitlines() if _TLDR_BULLET_RE.match(ln.strip())]
+    )
+
+
 def _load_projects() -> dict:
     pending = {}
     if PROJECTS_FILE.exists():
@@ -831,6 +889,8 @@ def _do_translate(
         "translate the question and answer text and rewrite the labels as `Q: ` and `A: ` "
         "(each on its own line). Never turn them into attribute form "
         '(`[faq question="..."]`) and never drop or merge blocks. '
+        "IMPORTANT — TL;DR section: keep the `## TL;DR` heading and translate each bullet "
+        "point (same count, same order). Do not convert it to a paragraph or drop it. "
         f"Output ONLY the translated article:\n\n{article}"
     )
     try:
@@ -841,14 +901,17 @@ def _do_translate(
             temperature=0.3,
         )
         raw_en = resp.choices[0].message.content or ""
-        en_content = _normalize_faq_blocks(
-            _normalize_five_paragraph_headings(
-                _set_frontmatter_tags(
-                    _fix_frontmatter_slug(
-                        _strip_outer_fence(_clean_code_block_whitespace(raw_en)), "-en"
-                    ),
-                    STANDARD_TAGS_EN,
-                )
+        en_content = _normalize_tldr(
+            _normalize_faq_blocks(
+                _normalize_five_paragraph_headings(
+                    _set_frontmatter_tags(
+                        _fix_frontmatter_slug(
+                            _strip_outer_fence(_clean_code_block_whitespace(raw_en)), "-en"
+                        ),
+                        STANDARD_TAGS_EN,
+                    )
+                ),
+                "en",
             ),
             "en",
         )
@@ -857,6 +920,11 @@ def _do_translate(
             print(f"⚠️ FAQ 区块数不一致：中文 {zh_faq} 条 / 英文 {en_faq} 条，请复核英文稿")
         elif en_faq:
             print(f"❓ FAQ: 中英文各 {en_faq} 条")
+        zh_tldr, en_tldr = _count_tldr_bullets(article), _count_tldr_bullets(en_content)
+        if zh_tldr != en_tldr:
+            print(f"⚠️ TL;DR 条数不一致：中文 {zh_tldr} 条 / 英文 {en_tldr} 条，请复核英文稿")
+        elif en_tldr:
+            print(f"📝 TL;DR: 中英文各 {en_tldr} 条")
         t_usage = resp.usage
         if t_usage:
             prompt_tokens += t_usage.prompt_tokens
@@ -1436,6 +1504,14 @@ def main():
         print(f"⚠️ FAQ 仅 {zh_faq_count} 条（建议 4-6 条）")
     else:
         print(f"❓ FAQ: {zh_faq_count} 条")
+    article = _normalize_tldr(article, "zh")
+    zh_tldr_count = _count_tldr_bullets(article)
+    if zh_tldr_count == 0:
+        print("⚠️ 文章没有 TL;DR 区块（GEO 收益缺失：AI 引擎难以快速抽取摘要）")
+    elif zh_tldr_count < 3:
+        print(f"⚠️ TL;DR 仅 {zh_tldr_count} 条（建议 3-5 条）")
+    else:
+        print(f"📝 TL;DR: {zh_tldr_count} 条")
     zh_path.write_text(article, encoding="utf-8")
     print(f"\n✅ 中文已保存 → {zh_path}")
 
