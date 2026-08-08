@@ -135,6 +135,53 @@ def _set_frontmatter_tags(text: str, tags: list[str]) -> str:
     return re.sub(r'^(---\n)', lambda m: f"{m.group(1)}tags: {tags_yaml}\n", text, count=1)
 
 
+_FAQ_BLOCK_RE = re.compile(r"\[faq\b([^\]]*)\](.*?)\[/faq\]", re.S)
+_FAQ_QA_RE = re.compile(
+    r"(?:问|Q(?:uestion)?)\s*[:：]\s*(.*?)\s*(?:答|A(?:nswer)?)\s*[:：]\s*(.*)", re.S
+)
+_FAQ_ATTR_Q_RE = re.compile(
+    r"""question\s*=\s*(?:"|&quot;|'|&#39;)?(.*?)(?:"|&quot;|'|&#39;)?\s*$""", re.S
+)
+
+
+def _normalize_faq_blocks(text: str, lang: str = "zh") -> str:
+    """归一化 [faq] 区块，保证 WordPress 端短代码能被正确解析。
+
+    1. 属性式 `[faq question="..."]答案[/faq]` → 正文式。Markdown 转换会把属性里的
+       引号实体化成 &quot;，属性式在 WordPress 端解析不出来，必须转成正文式。
+    2. `[faq]` / `[/faq]` 与问、答各自独占一行（多余空白、单行写法都会被拉平）。
+    3. 英文版统一成 `Q: / A:`，中文版统一成 `问：/答：`。
+
+    识别不出问答结构的区块原样保留，交由后续人工/评审处理，不静默丢内容。
+    """
+    q_label, a_label = ("Q: ", "A: ") if lang == "en" else ("问：", "答：")
+
+    def repl(m):
+        attrs, body = m.group(1) or "", (m.group(2) or "").strip()
+        if "[faq" in body:
+            # 少了闭合标签导致跨块吞并，宁可原样保留也不合并两条问答
+            return m.group(0)
+        qa = _FAQ_QA_RE.search(body)
+        if qa:
+            q, a = qa.group(1), qa.group(2)
+        else:
+            attr_q = _FAQ_ATTR_Q_RE.search(attrs.strip())
+            if not attr_q:
+                return m.group(0)
+            q, a = attr_q.group(1), body
+        q = re.sub(r"\s+", " ", q).strip()
+        a = a.strip()
+        if not q or not a:
+            return m.group(0)
+        return f"[faq]\n{q_label}{q}\n{a_label}{a}\n[/faq]"
+
+    return _FAQ_BLOCK_RE.sub(repl, text)
+
+
+def _count_faq_blocks(text: str) -> int:
+    return len(_FAQ_BLOCK_RE.findall(text))
+
+
 def _load_projects() -> dict:
     pending = {}
     if PROJECTS_FILE.exists():
@@ -779,6 +826,11 @@ def _do_translate(
         "Keep ALL code examples, file paths, class names, function names, and the "
         "YAML front matter structure unchanged. Translate the `title` field, but change "
         "the `slug` field to end with `-en` (e.g. `foo` -> `foo-en`), never `-zh`. "
+        "IMPORTANT — FAQ blocks: keep every `[faq]` ... `[/faq]` shortcode exactly as a "
+        "block (same count, same order, tags on their own lines). Inside each block, "
+        "translate the question and answer text and rewrite the labels as `Q: ` and `A: ` "
+        "(each on its own line). Never turn them into attribute form "
+        '(`[faq question="..."]`) and never drop or merge blocks. '
         f"Output ONLY the translated article:\n\n{article}"
     )
     try:
@@ -789,14 +841,22 @@ def _do_translate(
             temperature=0.3,
         )
         raw_en = resp.choices[0].message.content or ""
-        en_content = _normalize_five_paragraph_headings(
-            _set_frontmatter_tags(
-                _fix_frontmatter_slug(
-                    _strip_outer_fence(_clean_code_block_whitespace(raw_en)), "-en"
-                ),
-                STANDARD_TAGS_EN,
-            )
+        en_content = _normalize_faq_blocks(
+            _normalize_five_paragraph_headings(
+                _set_frontmatter_tags(
+                    _fix_frontmatter_slug(
+                        _strip_outer_fence(_clean_code_block_whitespace(raw_en)), "-en"
+                    ),
+                    STANDARD_TAGS_EN,
+                )
+            ),
+            "en",
         )
+        zh_faq, en_faq = _count_faq_blocks(article), _count_faq_blocks(en_content)
+        if zh_faq != en_faq:
+            print(f"⚠️ FAQ 区块数不一致：中文 {zh_faq} 条 / 英文 {en_faq} 条，请复核英文稿")
+        elif en_faq:
+            print(f"❓ FAQ: 中英文各 {en_faq} 条")
         t_usage = resp.usage
         if t_usage:
             prompt_tokens += t_usage.prompt_tokens
@@ -1368,6 +1428,14 @@ def main():
         _fix_frontmatter_slug(_strip_outer_fence(_clean_code_block_whitespace(article)), ""),
         STANDARD_TAGS_ZH,
     )
+    article = _normalize_faq_blocks(article, "zh")
+    zh_faq_count = _count_faq_blocks(article)
+    if zh_faq_count == 0:
+        print("⚠️ 文章没有 [faq] 区块，将不会生成 FAQPage 结构化数据（GEO 收益缺失）")
+    elif zh_faq_count < 4:
+        print(f"⚠️ FAQ 仅 {zh_faq_count} 条（建议 4-6 条）")
+    else:
+        print(f"❓ FAQ: {zh_faq_count} 条")
     zh_path.write_text(article, encoding="utf-8")
     print(f"\n✅ 中文已保存 → {zh_path}")
 
