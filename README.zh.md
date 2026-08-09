@@ -268,3 +268,10 @@ uv sync            # 或：make install
 ## 许可证
 
 MIT
+
+---
+
+## 相关文章
+
+- 中文: [CrewAI PSE：程序化校验](https://erishen.cn/crewai-pse-programmatic-verification/)
+- English: [CrewAI PSE: Programmatic Verification](https://erishen.cn/crewai-pse-programmatic-verification-en/)

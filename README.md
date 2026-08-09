@@ -269,6 +269,13 @@ All four share the **PSE role model** and a **verify→fix loop**, but differ in
 | Reference use | asset data → periodic analysis advice | **project code → bilingual article → WordPress** | structured-data quality QA + periodic review | document tailoring (RAG-grounded) |
 | Best for | Cheap, frequent drafts | Richer multi-agent publishing | Explicit state control + anti-hallucination gates | RAG-grounded generation |
 
+---
+
+## Related Articles
+
+- English: [CrewAI PSE: Programmatic Verification](https://erishen.cn/crewai-pse-programmatic-verification-en/)
+- 中文: [CrewAI PSE：程序化校验](https://erishen.cn/crewai-pse-programmatic-verification/)
+
 ## License
 
 MIT
