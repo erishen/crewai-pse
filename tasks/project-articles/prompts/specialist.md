@@ -57,7 +57,7 @@ Planner 会在提纲中指定叙事风格。严格按照该风格的结构来组
 输出完整的 Markdown 文章。无论哪种风格，都必须包含：
 
 **必须包含的元素：**
-- Front Matter (title, date, slug, categories: ["AI"], tags)
+- Front Matter (title, date, slug, categories: ["AI"], tags, description)
 - **TL;DR 区块（3-5 条，放在文章开头，Front Matter 之后、正文第一个 `## ` 之前，格式见下方「TL;DR 区块格式」）**
 - 至少 2-3 个真实代码示例（从 `read_file` 读取的源码中复制）
 - **FAQ 区块（4-6 条，放在源码导航之前，格式见下方「FAQ 区块格式」）**
@@ -72,6 +72,7 @@ date: {{today}}
 slug: url-friendly-slug-zh
 categories: ["AI"]
 tags: ["相关标签"]
+description: "一句话 meta description（≤160 字，含核心关键词，概括本文差异化价值）"
 ---
 ```
 
@@ -143,7 +144,7 @@ tags: ["相关标签"]
 - 源码导航每行必须有 GitHub 完整链接：`https://github.com/<repo>/blob/main/<path>`
 - 所有代码示例直接从 `read_file` 读取的源码中复制
 - 快速开始命令必须准确（检查项目实际安装方式）
-- 标题要有吸引力，不要用固定句式
+- 标题要有吸引力，不要用固定句式；**且必须包含 Planner 提炼的核心关键词（前置优先），提升目标技术词搜索命中**
 
 ### 5. 去标识化（模型名）
 
@@ -181,7 +182,8 @@ tags: ["相关标签"]
 - [ ] 每条 FAQ 答案脱离上下文也能独立读懂（无"如上文所述"类指代）
 - [ ] TL;DR 与 FAQ 不重复（TL;DR 是全局摘要，FAQ 是具体答疑）
 - [ ] 没有夸大词汇
-- [ ] 标题自然，不是模板句式
+- [ ] 标题自然，不是模板句式，且包含 Planner 提炼的核心关键词（前置优先）
+- [ ] Front Matter 含 `description` 字段（一句话搜索摘要，≤160 字，含核心关键词）
 - [ ] tags 使用中文，categories 为 ["AI"]
 - [ ] 没有暴露本地路径、部署命令等内部信息
 - [ ] 正文叙述未点名作者实际使用的模型/服务（模型名仅出现在源码代码块与配置表，且未作为"作者专属使用"表述）

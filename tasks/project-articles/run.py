@@ -240,6 +240,82 @@ def _count_tldr_bullets(text: str) -> int:
     )
 
 
+# ── SEO 程序化层（零额外 token）──
+# 让未来每篇文章自动获得：① 受控 meta description（复用 TL;DR 首条），② 同系列内链。
+# 弥补 Planner/Specialist 不输出 description、且全链路无内链的问题。
+# 与 FAQ/TL;DR 归一逻辑正交，互不干扰。
+
+
+def _yaml_str(s: str) -> str:
+    """转义后包双引号的 YAML 标量（description 可能含冒号/引号）。"""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _auto_description(text: str, lang: str = "zh") -> str:
+    """从 TL;DR 首条要点自动生成 meta description（≤160 字）。
+
+    TL;DR 已是 GEO 友好的「全局结论摘要」，复用其首条作搜索摘要零额外 token。
+    无 TL;DR 时兜底取首个正文段落前 150 字。
+    """
+    m = _TLDR_BLOCK_RE.search(text)
+    if m:
+        for line in m.group(1).splitlines():
+            s = line.strip()
+            bm = _TLDR_BULLET_RE.match(s)
+            if bm:
+                return bm.group(1).strip()[:160]
+    fm, body = _extract_frontmatter(text)
+    paras = [p.strip() for p in body.split("\n\n") if p.strip() and not p.strip().startswith("#")]
+    if paras:
+        return paras[0][:150]
+    return ""
+
+
+def _series_links(current_key: str, lang: str = "zh") -> list[tuple[str, str]]:
+    """已发布且含 link 的同系列 PSE 兄弟文章 [(key, link)]，排除自己。
+
+    仅链已发布兄弟，避免 404 内链；zh 取中文 link、en 取英文 link（缺则回退中文）。
+    """
+    out: list[tuple[str, str]] = []
+    if not PUBLISHED_FILE.exists():
+        return out
+    try:
+        published = json.loads(PUBLISHED_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return out
+    for k, cfg in published.items():
+        if k == current_key or "-pse" not in k:
+            continue
+        pub = cfg.get("published") or {}
+        link = pub.get(lang, {}).get("link") or pub.get("zh", {}).get("link")
+        if link:
+            out.append((k, link))
+    return out
+
+
+def _inject_series_links(text: str, current_key: str, lang: str = "zh") -> str:
+    """在文末（源码导航之后）注入同系列文章内链。"""
+    links = _series_links(current_key, lang)
+    if not links:
+        return text
+    heading = "## 同系列文章" if lang == "zh" else "## Related Articles in this Series"
+    items = "\n".join(f"- [{k}]({link})" for k, link in links)
+    return text.rstrip() + f"\n\n{heading}\n\n{items}\n"
+
+
+def _inject_frontmatter_description(text: str, desc: str) -> str:
+    """向 frontmatter 注入 description 字段（已存在则不覆盖）。"""
+    if not desc:
+        return text
+    m = re.match(r"^(---\n.*?\n)---\n", text, re.DOTALL)
+    if not m:
+        return text
+    if re.search(r"^description:", m.group(1), re.MULTILINE):
+        return text
+    new_fm = m.group(1) + f"\ndescription: {_yaml_str(desc)}\n---\n"
+    return new_fm + text[m.end():]
+
+
 def _load_projects() -> dict:
     pending = {}
     if PROJECTS_FILE.exists():
@@ -884,6 +960,7 @@ def _do_translate(
         "Keep ALL code examples, file paths, class names, function names, and the "
         "YAML front matter structure unchanged. Translate the `title` field, but change "
         "the `slug` field to end with `-en` (e.g. `foo` -> `foo-en`), never `-zh`. "
+        "Translate the `description` field too (it carries the meta description). "
         "IMPORTANT — FAQ blocks: keep every `[faq]` ... `[/faq]` shortcode exactly as a "
         "block (same count, same order, tags on their own lines). Inside each block, "
         "translate the question and answer text and rewrite the labels as `Q: ` and `A: ` "
@@ -930,6 +1007,11 @@ def _do_translate(
             prompt_tokens += t_usage.prompt_tokens
             completion_tokens += t_usage.completion_tokens
             print(f"📊 翻译: {t_usage.prompt_tokens} 输入 + {t_usage.completion_tokens} 输出")
+        # ── SEO 程序化层：英文也注入 description + 同系列内链 ──
+        en_content = _inject_series_links(en_content, project_key, "en")
+        en_desc = _auto_description(en_content, "en")
+        if en_desc:
+            en_content = _inject_frontmatter_description(en_content, en_desc)
         en_path = ARTICLES_DIR / "en" / f"{slug}.md"
         en_path.parent.mkdir(parents=True, exist_ok=True)
         en_path.write_text(en_content, encoding="utf-8")
@@ -1505,6 +1587,13 @@ def main():
     else:
         print(f"❓ FAQ: {zh_faq_count} 条")
     article = _normalize_tldr(article, "zh")
+    # ── SEO 程序化层：自动 meta description + 同系列内链（零额外 token）──
+    zh_desc = _auto_description(article, "zh")
+    if zh_desc:
+        article = _inject_frontmatter_description(article, zh_desc)
+    else:
+        print("⚠️ 无法从 TL;DR 生成 description（meta description 缺失，搜索结果摘要不可控）")
+    article = _inject_series_links(article, project_key, "zh")
     zh_tldr_count = _count_tldr_bullets(article)
     if zh_tldr_count == 0:
         print("⚠️ 文章没有 TL;DR 区块（GEO 收益缺失：AI 引擎难以快速抽取摘要）")
