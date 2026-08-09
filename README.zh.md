@@ -272,6 +272,4 @@ MIT
 ---
 
 ## 相关文章
-
-- 中文: [CrewAI PSE：程序化校验](https://erishen.cn/crewai-pse-programmatic-verification/)
-- English: [CrewAI PSE: Programmatic Verification](https://erishen.cn/crewai-pse-programmatic-verification-en/)
+- [当 LLM 开始骗自己：一个用正则表达式守护文章可信度的多 Agent 框架](https://erishen.cn/crewai-pse-programmatic-verification/)

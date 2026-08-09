@@ -272,9 +272,7 @@ All four share the **PSE role model** and a **verify→fix loop**, but differ in
 ---
 
 ## Related Articles
-
-- English: [CrewAI PSE: Programmatic Verification](https://erishen.cn/crewai-pse-programmatic-verification-en/)
-- 中文: [CrewAI PSE：程序化校验](https://erishen.cn/crewai-pse-programmatic-verification/)
+- [When LLMs Start Deceiving Themselves: A Multi-Agent Framework Guarding Article Credibility with Regular Expressions](https://erishen.cn/crewai-pse-programmatic-verification-en/)
 
 ## License
 
