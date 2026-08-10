@@ -1581,7 +1581,14 @@ def main():
     article = _normalize_faq_blocks(article, "zh")
     zh_faq_count = _count_faq_blocks(article)
     if zh_faq_count == 0:
-        print("⚠️ 文章没有 [faq] 区块，将不会生成 FAQPage 结构化数据（GEO 收益缺失）")
+        print("\n❌ 核查未通过：文章缺少 [faq] 区块（无法生成 FAQPage 结构化数据，GEO 收益缺失）")
+        print("   文章不可发布。已隔离至 needs-review 目录，请手工补 4-6 条 FAQ 或重新生成。")
+        nr_dir = ARTICLES_DIR / "needs-review"
+        nr_dir.mkdir(parents=True, exist_ok=True)
+        nr_path = nr_dir / f"{slug_zh}.md"
+        nr_path.write_text(article, encoding="utf-8")
+        print(f"   已保存待复核 → {nr_path}")
+        raise SystemExit(1)
     elif zh_faq_count < 4:
         print(f"⚠️ FAQ 仅 {zh_faq_count} 条（建议 4-6 条）")
     else:
