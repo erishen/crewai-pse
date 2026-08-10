@@ -191,18 +191,20 @@ def _extract_frontmatter(text: str):
 
 
 _TLDR_BLOCK_RE = re.compile(
-    r"^#{1,4}\s*TL;?DR\b[^\n]*\n+(.*?)(?=\n#{1,4}\s|\Z)",
+    r"^#{1,4}\s*[^\n]*TL;?DR\b[^\n]*\n+(.*?)(?=\n#{1,4}\s|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 _TLDR_BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 
 
 def _normalize_tldr(text: str, lang: str = "zh") -> str:
-    """归一化 TL;DR 区块，保证 GEO 友好：标题统一 `## TL;DR`、3-5 条要点、置于正文开头。
+    """归一化 TL;DR 区块，保证 GEO 友好：标题统一 `## 速览（TL;DR）`、3-5 条要点、置于引言之后。
 
-    1. 识别各种写法（### TL;DR / TL;DR（本文要点） / TL;DR： 等）→ 统一 `## TL;DR`。
+    1. 识别各种写法（### TL;DR / TL;DR（本文要点） / TL;DR： / ## 速览（TL;DR） 等）→ 统一 `## 速览（TL;DR）`。
     2. 仅抽取 bullet 形式的要点（- / * / 数字序号），归一为 `- `，上限 5 条。
-    3. 把 TL;DR 块移动到 front matter 之后、正文最前面（AI 引擎优先抽取摘要）。
+    3. 把 TL;DR 块移动到「引言 / Introduction」章节之后、第一个技术章节之前；若文章无显式引言章节，
+       则放在正文第一个 `## ` 章节之后。这样 erishen.cn 列表页摘要（实时从正文前 ~160 字生成）
+       会落在引言正文而非「速览」标题上，避免列表页摘要以“速览（TL;DR）”开头。
     4. 识别不出结构（无 TL;DR / 无可识别要点）时原样返回，不静默丢内容。
     """
     fm, body = _extract_frontmatter(text)
@@ -222,13 +224,26 @@ def _normalize_tldr(text: str, lang: str = "zh") -> str:
     if not bullets:
         return text
     bullets = bullets[:5]
-    tldr = "## TL;DR\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
+    tldr = "## 速览（TL;DR）\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
     before = body[: block_m.start()].rstrip()
     after = body[block_m.end():].lstrip()
-    rest = (before + "\n\n" + after).strip()
+    rest = (before + "\n\n" + after).strip() + "\n"
+    # 定位插入点：优先「引言 / Introduction」，否则第一个 ## 章节之后
+    intro_m = re.search(r"^##\s*(?:引言|Introduction)[^\n]*", rest, re.MULTILINE | re.IGNORECASE)
+    anchor = intro_m if intro_m else re.search(r"^##\s", rest, re.MULTILINE)
+    if anchor:
+        tail = rest[anchor.end():]
+        nxt = re.search(r"\n##\s", tail)
+        if nxt:
+            pos = anchor.end() + nxt.start()
+            new_body = rest[:pos].rstrip() + "\n\n" + tldr + "\n" + rest[pos:].lstrip()
+        else:
+            new_body = rest.rstrip() + "\n\n" + tldr + "\n"
+    else:
+        new_body = tldr + rest
     if fm:
-        return fm.rstrip() + "\n\n" + tldr + "\n" + rest + "\n"
-    return tldr + "\n" + rest + "\n"
+        return fm.rstrip() + "\n\n" + new_body
+    return new_body
 
 
 def _count_tldr_bullets(text: str) -> int:
@@ -966,7 +981,7 @@ def _do_translate(
         "translate the question and answer text and rewrite the labels as `Q: ` and `A: ` "
         "(each on its own line). Never turn them into attribute form "
         '(`[faq question="..."]`) and never drop or merge blocks. '
-        "IMPORTANT — TL;DR section: keep the `## TL;DR` heading and translate each bullet "
+        "IMPORTANT — TL;DR section: keep the `## 速览（TL;DR）` heading and translate each bullet "
         "point (same count, same order). Do not convert it to a paragraph or drop it. "
         f"Output ONLY the translated article:\n\n{article}"
     )
