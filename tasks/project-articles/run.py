@@ -203,8 +203,8 @@ def _normalize_tldr(text: str, lang: str = "zh") -> str:
     1. 识别各种写法（### TL;DR / TL;DR（本文要点） / TL;DR： / ## 速览（TL;DR） 等）→ 统一 `## 速览（TL;DR）`。
     2. 仅抽取 bullet 形式的要点（- / * / 数字序号），归一为 `- `，上限 5 条。
     3. 把 TL;DR 块移动到「引言 / Introduction」章节之后、第一个技术章节之前；若文章无显式引言章节，
-       则放在正文第一个 `## ` 章节之后。这样 erishen.cn 列表页摘要（实时从正文前 ~160 字生成）
-       会落在引言正文而非「速览」标题上，避免列表页摘要以“速览（TL;DR）”开头。
+       则放在正文第一个 `## ` 章节之后。列表页摘要现以 crewai-pse 生成的专属 excerpt（写入 post_excerpt）为准，
+       本步主要影响正文阅读顺序与「description 缺失时」的兜底摘要质量，避免兜底摘要以“速览（TL;DR）”开头。
     4. 识别不出结构（无 TL;DR / 无可识别要点）时原样返回，不静默丢内容。
     """
     fm, body = _extract_frontmatter(text)
@@ -328,6 +328,72 @@ def _inject_frontmatter_description(text: str, desc: str) -> str:
     if re.search(r"^description:", m.group(1), re.MULTILINE):
         return text
     new_fm = m.group(1) + f"\ndescription: {_yaml_str(desc)}\n---\n"
+    return new_fm + text[m.end():]
+
+
+def _generate_excerpt(body: str, client, model: str, lang: str = "zh"):
+    """调用 LLM 生成 1-2 句真实归纳，作为列表页专属摘要（区别于 SEO 的 description）。
+
+    与 _auto_description（复用 TL;DR 首条、零 token）不同，这里对正文做一次性轻量归纳，
+    产出更贴近全文的列表卡片摘要。返回 (excerpt, prompt_tokens, completion_tokens)；
+    失败（API 异常 / 正文过短）时回退 ("", 0, 0)，由调用方决定是否回退 description。
+    """
+    fm, body_only = _extract_frontmatter(body)
+    # 去掉代码块与 TL;DR/速览，避免摘要抄袭代码或复述要点标题
+    text = re.sub(r"```.*?```", "", body_only, flags=re.DOTALL)
+    text = re.sub(_TLDR_BLOCK_RE, "", text)
+    text = re.sub(r"^##\s*速览.*$", "", text, flags=re.MULTILINE)
+    # 去掉 FAQ 短代码，避免摘要被问答占满
+    text = _FAQ_BLOCK_RE.sub("", text)
+    text = text.strip()[:4000]
+    if not text:
+        return "", 0, 0
+    if lang == "en":
+        sys_msg = (
+            "You are a technical article summarization expert. Write a 1-2 sentence summary "
+            "for a list-page card excerpt. Requirements: 1-2 sentences, under 220 characters; "
+            "state plainly what project / engineering decision the article covers and what the "
+            "reader takes away; no meta phrasing like 'this article' / 'we will'; do not copy "
+            "the title; no code or symbol lists. Output only the summary, no quotes, no prefix."
+        )
+    else:
+        sys_msg = (
+            "你是技术文章的摘要专家。请基于下面的文章，写一段用于「列表页卡片摘要」的 1-2 句中文归纳。"
+            "要求：1-2 句话、不超过 110 字；直接说清这篇文章讲了什么项目 / 什么核心工程决策 / 读者能带走什么；"
+            "不要出现「本文」「这篇文章」「我们将」等元叙述；不要照抄标题；不要包含代码或符号名列表。"
+            "只输出摘要本身，不要引号、不要前缀。"
+        )
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_msg},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=200,
+            temperature=0.3,
+        )
+        ex = (resp.choices[0].message.content or "").strip().strip('"').strip("'").strip()
+        ex = ex.strip("`").strip()
+        u = getattr(resp, "usage", None)
+        p = u.prompt_tokens if u else 0
+        c = u.completion_tokens if u else 0
+        return ex, p, c
+    except Exception as e:
+        print(f"⚠️ 生成 excerpt 失败（列表摘要将回退 description）: {e}")
+        return "", 0, 0
+
+
+def _inject_frontmatter_excerpt(text: str, excerpt: str) -> str:
+    """向 frontmatter 注入 excerpt 字段（已存在则不覆盖）。"""
+    if not excerpt:
+        return text
+    m = re.match(r"^(---\n.*?\n)---\n", text, re.DOTALL)
+    if not m:
+        return text
+    if re.search(r"^excerpt:", m.group(1), re.MULTILINE):
+        return text
+    new_fm = m.group(1) + f"\nexcerpt: {_yaml_str(excerpt)}\n---\n"
     return new_fm + text[m.end():]
 
 
@@ -1027,6 +1093,14 @@ def _do_translate(
         en_desc = _auto_description(en_content, "en")
         if en_desc:
             en_content = _inject_frontmatter_description(en_content, en_desc)
+        # ── 列表页专属摘要：英文也生成 1-2 句真实归纳 ──
+        en_excerpt, ep2, ec2 = _generate_excerpt(en_content, client, model, "en")
+        prompt_tokens += ep2
+        completion_tokens += ec2
+        if en_excerpt:
+            en_content = _inject_frontmatter_excerpt(en_content, en_excerpt)
+        else:
+            print("⚠️ 无法生成英文 excerpt（将回退 description）")
         en_path = ARTICLES_DIR / "en" / f"{slug}.md"
         en_path.parent.mkdir(parents=True, exist_ok=True)
         en_path.write_text(en_content, encoding="utf-8")
@@ -1615,6 +1689,14 @@ def main():
         article = _inject_frontmatter_description(article, zh_desc)
     else:
         print("⚠️ 无法从 TL;DR 生成 description（meta description 缺失，搜索结果摘要不可控）")
+    # ── 列表页专属摘要：LLM 生成 1-2 句真实归纳（区别于 SEO 的 description）──
+    zh_excerpt, ep, ec = _generate_excerpt(article, fix_client, fix_model, "zh")
+    prompt_tokens += ep
+    completion_tokens += ec
+    if zh_excerpt:
+        article = _inject_frontmatter_excerpt(article, zh_excerpt)
+    else:
+        print("⚠️ 无法生成 excerpt（列表摘要将回退 description）")
     article = _inject_series_links(article, project_key, "zh")
     zh_tldr_count = _count_tldr_bullets(article)
     if zh_tldr_count == 0:
