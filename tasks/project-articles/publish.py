@@ -31,6 +31,28 @@ WP_USERNAME = os.getenv("WP_USERNAME", "your-username")
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
 LINKS_PAGE_ID = int(os.getenv("LINKS_PAGE_ID", "1"))
 
+# 强制统一出网代理：shell/uv/make 链路可能把旧端口（如 7890）一路带进 node，
+# 而 make 的 export 未必能压过它。这里在 spawn writeArticle.js 前覆盖代理环境变量，
+# 确保 axios 走 .env 里 WP_PROXY 指定的正确端口。换端口只改 .env 一处即可。
+_PROXY = (
+    os.getenv("WP_PROXY")
+    or os.getenv("HTTPS_PROXY")
+    or os.getenv("HTTP_PROXY")
+    or "http://127.0.0.1:7897"
+)
+for _pk in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+    os.environ[_pk] = _PROXY
+
+# ⚠️ 关键：Python 的 urllib 默认【不读取】环境变量代理。上面设的 HTTP_PROXY 只对
+# subprocess 调起的 node/axios 生效；本文件内 urllib.request.urlopen() 仍会裸直连，
+# 在国内访问海外 VPS 上的 erishen.cn 时直接失败。必须显式安装 ProxyHandler 让 urllib
+# 走代理，否则 _set_lang_meta / _update_links_page 等写入 meta 的请求会静默失败。
+import urllib.request as _urllib
+
+_urllib.install_opener(
+    _urllib.build_opener(_urllib.ProxyHandler({"http": _PROXY, "https": _PROXY}))
+)
+
 
 def _load_pending() -> dict:
     if not PROJECTS_FILE.exists():
@@ -205,22 +227,32 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
         print(f"  ⚠️ 获取链接页面失败：{e}")
         return
 
-    # 若链接已存在，更新其锚点文字（幂等）；否则在列表头部插入新条目
-    href_pattern = re.compile(
-        r'(<a href="' + re.escape(link) + r'"[^>]*>)[^<]*(</a>)'
+    # 构建条目：中文标题 + （若已发布英文版）英文链接
+    en_link = pub_info.get("en", {}).get("link")
+    en_part = ""
+    if en_link:
+        en_part = (
+            f' · <a href="{en_link}" '
+            f'style="color:#2563eb;text-decoration:none;">English</a>'
+        )
+    new_item = (
+        f'<li style="margin-bottom:8px;">'
+        f'<span style="color:#9ca3af;">[{month}]</span> '
+        f'<a href="{link}" style="color:#374151;text-decoration:none;">{title}</a>'
+        f'{en_part} '
+        f'<span style="color:#9ca3af;font-size:12px;">(AI)</span></li>\n'
     )
-    if href_pattern.search(current_content):
-        new_content = href_pattern.sub(
-            lambda m: m.group(1) + title + m.group(2), current_content
-        )
-        print("  🔄 链接页面已存在该文章，已更新其标题文字")
+
+    # 若链接已存在，整条 <li> 替换（幂等更新标题与英文链接）；否则在列表头部插入新条目
+    # 关键：用「不跨越 </li>」约束，确保从「包含该链接的那个 <li>」开始匹配，
+    # 避免从更靠前的 <li> 起跳、把前一条目也吞掉。
+    li_pattern = re.compile(
+        r"<li[^>]*>(?:(?!</li>).)*?" + re.escape(link) + r".*?</li>", re.DOTALL
+    )
+    if li_pattern.search(current_content):
+        new_content = li_pattern.sub(new_item, current_content, count=1)
+        print("  🔄 链接页面已存在该文章，已更新标题与英文链接")
     else:
-        new_item = (
-            f'<li style="margin-bottom:8px;">'
-            f'<span style="color:#9ca3af;">[{month}]</span> '
-            f'<a href="{link}" style="color:#374151;text-decoration:none;">{title}</a> '
-            f'<span style="color:#9ca3af;font-size:12px;">(AI)</span></li>\n'
-        )
         first_li = current_content.find("<li")
         if first_li != -1:
             new_content = current_content[:first_li] + new_item + current_content[first_li:]
@@ -245,6 +277,63 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
             print("  ✅ 已更新链接页面")
     except Exception as e:
         print(f"  ️ 更新链接页面失败：{e}")
+
+
+def _set_lang_meta(pub_info: dict) -> None:
+    """为双语文章设置 english_url / chinese_url post meta。
+
+    主题 language-switcher.php 在首页列表（render_block 钩子）与详情页（the_content 钩子）
+    渲染语言切换链接时，优先读取这两个 meta；若为空则按 "slug + -en" 约定回退。
+    本站中文文章 slug 带 -zh 后缀（如 photo_library-zh），回退会算成 photo_library-zh-en
+    （不存在），导致英文链接缺失。显式写入 meta 可彻底规避 slug 约定问题，
+    且对 personal_crm 等裸 slug 文章同样兼容（主题先读 meta，回退仅作兜底）。
+    """
+    if not WP_APP_PASSWORD:
+        print("  ⚠️ 未设置 WP_APP_PASSWORD，跳过语言 meta 设置")
+        return
+    if "zh" not in pub_info or "en" not in pub_info:
+        return
+
+    zh = pub_info["zh"]
+    en = pub_info["en"]
+    zh_link = zh.get("link")
+    en_link = en.get("link")
+    zh_id = zh.get("wp_id")
+    en_id = en.get("wp_id")
+    if not (zh_link and en_link and zh_id and en_id):
+        print("  ⚠️ 缺少 link / wp_id，跳过语言 meta 设置")
+        return
+
+    import base64
+    import json
+    import urllib.request
+
+    auth = base64.b64encode(f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()).decode()
+
+    # 中文文章为 post、英文为 page。主题 language-switcher.php 的详情页切换器逻辑：
+    #   english_url 有值 → 显示「🇬🇧 English」按钮；chinese_url 有值 → 显示「🇨🇳 中文版」按钮。
+    # 因此每侧【只写对方的链接、并把自身链接字段清空】，否则两侧都会同时带两个 meta，
+    # 导致中文详情页把「中文版」(指向自己)按钮也渲染出来，无意义且重复。
+    # ⚠️ 关键：WP REST 更新自定义 meta 必须把字段放进 "meta" 子对象，
+    # 顶层传 {"english_url": ...} 会被 REST 静默忽略（不报错但不写入）。
+    # 主题 register_post_meta(..., show_in_rest=true) 已将该 meta 暴露为 REST 的 meta 字段；
+    # 写入空串 "" 即清空（get_post_meta 返回空串为假，按钮不渲染）。
+    updates = [
+        # 中文 post：只设 english_url（对方），chinese_url 置空清除历史误写
+        (f"{WP_API_URL}/posts/{zh_id}", {"meta": {"english_url": en_link, "chinese_url": ""}}),
+        # 英文 page：只设 chinese_url（对方），english_url 置空清除历史误写
+        (f"{WP_API_URL}/pages/{en_id}", {"meta": {"chinese_url": zh_link, "english_url": ""}}),
+    ]
+    for url, body in updates:
+        try:
+            data = json.dumps(body).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            req.add_header("Authorization", f"Basic {auth}")
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req) as resp:
+                print(f"  ✅ 已写入语言 meta: {url.split('/')[-1]} -> {list(body['meta'].keys())}")
+        except Exception as e:
+            print(f"  ⚠️ 写入语言 meta 失败 {url}: {e}")
 
 
 def _publish_article(wp_dir: Path, filename: str, lang: str, prod: bool) -> dict | None:
@@ -351,6 +440,13 @@ def main():
     if pub_info:
         print("\n 更新链接页面...")
         _update_links_page(project_key, pub_info)
+
+    # 设置双语语言 meta（english_url / chinese_url），驱动首页列表与详情页的语言切换链接。
+    # 主题 language-switcher.php 优先读该 meta；slug 约定回退对 -zh 后缀中文 slug 失效
+    # （photo_library-zh -> photo_library-zh-en 不存在），故显式写入最稳，且不依赖 slug 命名约定。
+    if "zh" in pub_info and "en" in pub_info:
+        print("\n🔗 设置双语语言 meta（english_url / chinese_url）...")
+        _set_lang_meta(pub_info)
 
     # 回写链接和 wp_id；发完后将项目从待写队列移至已发存档
     if pub_info:

@@ -1,5 +1,12 @@
 .PHONY: install lint clean articles articles-agnes articles-paid publish archive translate translate-agnes translate-paid
 
+# 出网代理：统一从 .env 的 WP_PROXY 读取（换端口只改 .env 一处）。
+# 原先 shell 里是 7890 已失效，会导致发布/调外部 API 时 ECONNREFUSED 127.0.0.1:7890；
+# 这里导出正确的端口，覆盖 shell 里的旧值，axios(node)/uv 均会沿用。
+export WP_PROXY := $(shell grep '^WP_PROXY=' .env 2>/dev/null | cut -d= -f2)
+export HTTP_PROXY := $(WP_PROXY)
+export HTTPS_PROXY := $(WP_PROXY)
+
 PY := uv run python
 P ?= $(shell grep '^DEFAULT_PROJECT=' .env 2>/dev/null | cut -d= -f2)
 # 归档后顺带在各平台目录重建该文章的副本（staging，等下次发平台时用最新源）
