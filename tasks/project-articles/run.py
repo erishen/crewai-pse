@@ -135,6 +135,20 @@ def _set_frontmatter_tags(text: str, tags: list[str]) -> str:
     return re.sub(r'^(---\n)', lambda m: f"{m.group(1)}tags: {tags_yaml}\n", text, count=1)
 
 
+def _project_categories(p: dict) -> list:
+    """项目分类解析：projects.json 声明 categories 则用之，否则回退 ['AI']（保持旧行为）。"""
+    cats = p.get("categories") if isinstance(p, dict) else None
+    return cats if isinstance(cats, list) and cats else ["AI"]
+
+
+def _project_tags(p: dict, lang: str = "zh") -> list:
+    """项目标签解析：projects.json 声明 tags 则用之，否则回退 STANDARD_TAGS_*。"""
+    tags = p.get("tags") if isinstance(p, dict) else None
+    if isinstance(tags, list) and tags:
+        return tags
+    return STANDARD_TAGS_EN if lang == "en" else STANDARD_TAGS_ZH
+
+
 _FAQ_BLOCK_RE = re.compile(r"\[faq\b([^\]]*)\](.*?)\[/faq\]", re.S)
 _FAQ_QA_RE = re.compile(
     r"(?:问|Q(?:uestion)?)\s*[:：]\s*(.*?)\s*(?:答|A(?:nswer)?)\s*[:：]\s*(.*)", re.S
@@ -1531,7 +1545,7 @@ def main():
                 f"title: {title}\n"
                 f"date: {date.today().isoformat()}\n"
                 f"slug: {project_key.replace('-', '_')}\n"
-                f"categories: [\"AI\"]\n"
+                f"categories: [{', '.join(f'\"{c}\"' for c in _project_categories(p))}]\n"
                 f"---\n\n"
             )
             article = front_matter + body_text
@@ -1595,7 +1609,7 @@ def main():
                 f"title: {title}\n"
                 f"date: {date.today().isoformat()}\n"
                 f"slug: {project_key.replace('-', '_')}\n"
-                f"categories: [\"AI\"]\n"
+                f"categories: [{', '.join(f'\"{c}\"' for c in _project_categories(p))}]\n"
                 f"---\n\n"
             )
             article = front_matter + body_text
@@ -1738,11 +1752,11 @@ def main():
     article = _normalize_five_paragraph_headings(
         _set_frontmatter_tags(
             _fix_frontmatter_slug(_strip_outer_fence(_clean_code_block_whitespace(article)), ""),
-            STANDARD_TAGS_ZH,
+            _project_tags(p, "zh"),
         )
     ) if style_override == "F" else _set_frontmatter_tags(
         _fix_frontmatter_slug(_strip_outer_fence(_clean_code_block_whitespace(article)), ""),
-        STANDARD_TAGS_ZH,
+        _project_tags(p, "zh"),
     )
     article = _normalize_faq_blocks(article, "zh")
     zh_faq_count = _count_faq_blocks(article)
