@@ -182,6 +182,60 @@ def _count_faq_blocks(text: str) -> int:
     return len(_FAQ_BLOCK_RE.findall(text))
 
 
+def _auto_generate_faq(body: str, project: dict, decision_line: str,
+                       client, model: str, lang: str = "zh") -> str:
+    """文章缺 [faq] 时，基于正文自动生成 4-6 条 FAQ（正文式短代码）。
+
+    返回 `[faq]...[/faq]` 字符串；失败或正文过短返回 ''。生成的区块随后会被
+    `_normalize_faq_blocks` 归一为 `问：/答：` 正文式，并通过 `_count_faq_blocks` 计数。
+    """
+    fm, body_only = _extract_frontmatter(body)
+    text = re.sub(r"```.*?```", "", body_only, flags=re.DOTALL)
+    text = _FAQ_BLOCK_RE.sub("", text)
+    text = text.strip()[:3500]
+    if not text:
+        return ""
+    if lang == "en":
+        sys_msg = (
+            "You are a technical FAQ writer. Based ONLY on the article below, write a "
+            "[faq]...[/faq] block with 4-6 reader questions and concise answers about the "
+            "project's design decisions, usage, and safety. Output format (each Q/A on its own "
+            "line, body-style shortcode):\n[faq]\nQ: ...\nA: ...\n[/faq]\n"
+            "Do NOT invent file names, APIs, or facts not in the article. Output only the block."
+        )
+    else:
+        sys_msg = (
+            "你是一名技术 FAQ 写手。请仅基于下面的文章，写一个 `[faq]...[/faq]` 区块，"
+            "包含 4-6 条读者关心的问答，聚焦本项目的设计取舍、使用方式、安全边界。"
+            "输出格式（每条问答各占一行，正文式短代码）：\n[faq]\n问：...\n答：...\n[/faq]\n"
+            "严禁编造文章里没有的文件名、API 或事实。只输出该区块本身。"
+        )
+    user_content = (
+        f"项目：{project.get('desc', '')}\n"
+        f"GitHub: {project.get('repo', '')}\n"
+        f"核心主线：{decision_line or ''}\n\n"
+        f"文章正文：\n{text}"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_msg},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=900,
+            temperature=0.4,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        # 兜底：确保外层 [faq]/[/faq] 包裹
+        if "[faq]" not in out:
+            out = f"[faq]\n{out}\n[/faq]"
+        return out
+    except Exception as e:
+        print(f"⚠️ 自动生成 FAQ 失败: {e}")
+        return ""
+
+
 def _extract_frontmatter(text: str):
     """返回 (frontmatter 含分隔行, 余下正文)。无 frontmatter 则 ('', text)。"""
     m = re.match(r"^---\n.*?\n---\n?", text, re.DOTALL)
@@ -1502,8 +1556,9 @@ def main():
 2. 正文不以 H1（`#`）开头，用 `##` / `###` 组织章节。
 3. 所有代码必须来自上面「真实源码片段」，不得编造；引用真实符号即可，无需复述整段代码。
 4. 在文章末尾加「源码导航」小节，用相对路径列出关键文件（如 `backend/app/crud.py`）。
-5. 不提及本地绝对路径、缓存目录等内部信息。
-6. 你只写本项目（{project_key}：{p['desc']}，GitHub: {p['repo']}）。绝对禁止写任何关于 AI 写作框架、多 Agent、验证机制、防幻觉、或本写作管线本身的内容。
+5. 在「源码导航」之后追加一个 FAQ 区块：用 `[faq]` 与 `[/faq]` 包裹 4-6 条问答，每条 `问：...` / `答：...` 各占一行（正文式短代码），内容须基于文章、严禁编造。
+6. 不提及本地绝对路径、缓存目录等内部信息。
+7. 你只写本项目（{project_key}：{p['desc']}，GitHub: {p['repo']}）。绝对禁止写任何关于 AI 写作框架、多 Agent、验证机制、防幻觉、或本写作管线本身的内容。
 
 {style_extra}""",
                 expected_output="一篇完整的中文 Markdown 技术文章（从第一个标题开始，无 Front Matter）",
@@ -1692,7 +1747,16 @@ def main():
     article = _normalize_faq_blocks(article, "zh")
     zh_faq_count = _count_faq_blocks(article)
     if zh_faq_count == 0:
-        print("\n❌ 核查未通过：文章缺少 [faq] 区块（无法生成 FAQPage 结构化数据，GEO 收益缺失）")
+        # 兜底：Writer 未产出 [faq] 时，基于正文自动生成，避免整轮生成白做（不再直接失败）
+        print("\n⚠️ 文章缺少 [faq] 区块，尝试自动生成 FAQ...")
+        faq_block = _auto_generate_faq(article, p, decision_line, fix_client, fix_model, "zh")
+        if faq_block:
+            article = article.rstrip() + "\n\n" + faq_block + "\n"
+            article = _normalize_faq_blocks(article, "zh")
+            zh_faq_count = _count_faq_blocks(article)
+            print(f"✅ 已自动补入 FAQ 区块：{zh_faq_count} 条")
+    if zh_faq_count == 0:
+        print("\n❌ 核查未通过：文章缺少 [faq] 区块（自动生成也失败）")
         print("   文章不可发布。已隔离至 needs-review 目录，请手工补 4-6 条 FAQ 或重新生成。")
         nr_dir = ARTICLES_DIR / "needs-review"
         nr_dir.mkdir(parents=True, exist_ok=True)
