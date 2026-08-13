@@ -982,6 +982,22 @@ def _parse_batches(outline: str, source_dir: Path) -> list[dict]:
     batches = []
     in_batch_section = False
 
+    def _ref_rel(f: str):
+        """把提纲里的文件引用归一化为可用于 rglob 的相对字符串。
+
+        LLM 生成的提纲有时会写出绝对路径（如 /Users/erishen/.../x.md），
+        直接传给 Path.rglob 会触发 NotImplementedError: Non-relative patterns
+        are unsupported。这里把绝对路径收敛到 source_dir 内的相对部分；
+        若绝对路径不在 source_dir 内则返回 None（无法匹配，跳过）。
+        """
+        p = Path(f)
+        if p.is_absolute():
+            try:
+                p = p.relative_to(source_dir)
+            except ValueError:
+                return None
+        return str(p)
+
     for line in outline.split("\n"):
         stripped = line.strip()
         if "文件分批" in stripped:
@@ -999,8 +1015,11 @@ def _parse_batches(outline: str, source_dir: Path) -> list[dict]:
                 # 过滤出实际存在的文件
                 existing = []
                 for f in files:
-                    if (source_dir / f).exists() or any(source_dir.rglob(f)):
-                        existing.append(f)
+                    rel = _ref_rel(f)
+                    if rel is None:
+                        continue
+                    if (source_dir / rel).exists() or any(source_dir.rglob(rel)):
+                        existing.append(rel)
                 if existing:
                     batches.append({"files": existing, "sections": sections})
 
@@ -1009,10 +1028,13 @@ def _parse_batches(outline: str, source_dir: Path) -> list[dict]:
 
     # 回退：从提纲中提取所有提到的文件路径，作为单批次
     all_files = set()
-    for match in re.finditer(r"[\w/]+\.(?:py|ts|tsx|js|jsx|md)", outline):
+    for match in re.finditer(r"[\w/]+\.(?:py|ts|tsx|js|jsx|md|rs|toml|go|java|cpp|rb|sql|json|ya?ml)", outline):
         f = match.group()
-        if (source_dir / f).exists() or any(source_dir.rglob(f)):
-            all_files.add(f)
+        rel = _ref_rel(f)
+        if rel is None:
+            continue
+        if (source_dir / rel).exists() or any(source_dir.rglob(rel)):
+            all_files.add(rel)
     if all_files:
         file_list = sorted(all_files)
         # 按 5 个一组分批
