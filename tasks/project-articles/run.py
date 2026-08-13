@@ -207,29 +207,39 @@ def _auto_generate_faq(body: str, project: dict, decision_line: str,
     text = re.sub(r"```.*?```", "", body_only, flags=re.DOTALL)
     text = _FAQ_BLOCK_RE.sub("", text)
     text = text.strip()[:3500]
-    if not text:
-        return ""
+    # 正文剥离后可能为空（文章以代码块/标题为主、或本次生成偏薄），此时退化为
+    # 仅用项目元信息生成，避免因为取不到正文就直接返回 '' 导致 FAQ 闸门整轮失败。
+    body_available = bool(text)
     if lang == "en":
         sys_msg = (
-            "You are a technical FAQ writer. Based ONLY on the article below, write a "
+            "You are a technical FAQ writer. Write a "
             "[faq]...[/faq] block with 4-6 reader questions and concise answers about the "
-            "project's design decisions, usage, and safety. Output format (each Q/A on its own "
-            "line, body-style shortcode):\n[faq]\nQ: ...\nA: ...\n[/faq]\n"
-            "Do NOT invent file names, APIs, or facts not in the article. Output only the block."
+            "project's design decisions, usage, and safety. "
+            + ("" if body_available else
+               "No article body is provided, so base answers ONLY on the project description "
+               "and do NOT invent file names, APIs, or facts. ")
+            + "Output format (each Q/A on its own line, body-style shortcode):\n"
+            "[faq]\nQ: ...\nA: ...\n[/faq]\n"
+            "Do NOT invent file names, APIs, or facts not in the source. Output only the block."
         )
     else:
         sys_msg = (
-            "你是一名技术 FAQ 写手。请仅基于下面的文章，写一个 `[faq]...[/faq]` 区块，"
+            "你是一名技术 FAQ 写手。请写一个 `[faq]...[/faq]` 区块，"
             "包含 4-6 条读者关心的问答，聚焦本项目的设计取舍、使用方式、安全边界。"
-            "输出格式（每条问答各占一行，正文式短代码）：\n[faq]\n问：...\n答：...\n[/faq]\n"
+            + ("" if body_available else
+               "未提供文章正文，请仅依据项目描述作答，严禁编造文件名、API 或事实。")
+            + "输出格式（每条问答各占一行，正文式短代码）：\n[faq]\n问：...\n答：...\n[/faq]\n"
             "严禁编造文章里没有的文件名、API 或事实。只输出该区块本身。"
         )
     user_content = (
         f"项目：{project.get('desc', '')}\n"
         f"GitHub: {project.get('repo', '')}\n"
-        f"核心主线：{decision_line or ''}\n\n"
-        f"文章正文：\n{text}"
+        f"核心主线：{decision_line or ''}\n"
     )
+    if body_available:
+        user_content += f"\n文章正文：\n{text}"
+    else:
+        user_content += "\n（未提供文章正文，请仅依据上述项目描述生成通用且准确的 FAQ。）"
     try:
         resp = client.chat.completions.create(
             model=model,
