@@ -368,8 +368,17 @@ def _series_links(current_key: str, lang: str = "zh") -> list[tuple[str, str]]:
     """已发布且含 link 的同系列 PSE 兄弟文章 [(key, link)]，排除自己。
 
     仅链已发布兄弟，避免 404 内链；zh 取中文 link、en 取英文 link（缺则回退中文）。
+
+    守卫：系列内链仅适用于 pse 系列文章。非 pse 项目（如 markdown-library /
+    photo-library / video-library 这类本地优先 Rust 工具）并不属于该系列，
+    不应被注入不相关的 pse 兄弟文章——它们的「相关项目」由人工在正文维护。
+    否则（如 --translate 漏传 project_key 或当前为非 pse 项目）会把
+    autogen-pse / crewai-pse / langgraph-pse / llamaindex-pse 等塞进一篇
+    Markdown 工具的译文里，形成文不对题的串链。
     """
     out: list[tuple[str, str]] = []
+    if "-pse" not in current_key:
+        return out
     if not PUBLISHED_FILE.exists():
         return out
     try:
@@ -1320,9 +1329,9 @@ def main():
         print(f"📖 已读取中文文章: {zh_path} ({len(article)} 字)")
         prompt_tokens = 0
         completion_tokens = 0
-        # 跳到翻译步骤
+        # 跳到翻译步骤（务必传 project_key，否则系列内链无法排除自己 / 会误注入不相关项目）
         _do_translate(article, slug_en, fix_client, fix_model,
-                       prompt_tokens, completion_tokens, do_publish)
+                       prompt_tokens, completion_tokens, do_publish, project_key)
         return
 
     crew = create_crew(task="project-articles")
