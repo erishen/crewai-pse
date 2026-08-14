@@ -90,6 +90,22 @@ def _src_mirror(src: Path, dst: Path) -> None:
 STANDARD_TAGS_ZH = ["AI助手", "架构设计", "开源工具"]
 STANDARD_TAGS_EN = ["AI Assistant", "Architecture Design", "Open Source Tool"]
 
+# 中文分类/标签 → 英文（用于英文稿 frontmatter，避免 LLM 把中文税则原样带过）。
+# 非 AI 项目（如 video-library/photo-library）在 projects.json 里声明的是中文
+# categories/tags，英文稿需翻译成英文分类名，而非套用默认的 STANDARD_TAGS_EN。
+_TAXONOMY_EN = {
+    "架构": "Architecture",
+    "架构设计": "Architecture Design",
+    "开源工具": "Open Source Tool",
+    "AI助手": "AI Assistant",
+    "AI": "AI",
+}
+
+
+def _en_taxonomy(names) -> list:
+    """把中文分类/标签名翻译成英文；不在映射表里的原样保留。"""
+    return [_TAXONOMY_EN.get(n, n) for n in names]
+
 
 def _strip_outer_fence(text: str) -> str:
     """去掉模型偶尔加在最外层的 ```markdown ... ``` 包裹（含残缺情形）。
@@ -133,6 +149,15 @@ def _set_frontmatter_tags(text: str, tags: list[str]) -> str:
         return re.sub(r'^tags:\s*.+$', f"tags: {tags_yaml}", text, count=1, flags=re.MULTILINE)
     # 没有 tags 行则在首个 --- 后插入
     return re.sub(r'^(---\n)', lambda m: f"{m.group(1)}tags: {tags_yaml}\n", text, count=1)
+
+
+def _set_frontmatter_categories(text: str, cats: list[str]) -> str:
+    """强制覆写 frontmatter 的 categories 为给定分类集（英文稿用英文分类名）。"""
+    cats_yaml = "[" + ", ".join(f'"{c}"' for c in cats) + "]"
+    if re.search(r'^categories:\s*.+$', text, flags=re.MULTILINE):
+        return re.sub(r'^categories:\s*.+$', f"categories: {cats_yaml}", text, count=1, flags=re.MULTILINE)
+    # 没有 categories 行则在首个 --- 后插入
+    return re.sub(r'^(---\n)', lambda m: f"{m.group(1)}categories: {cats_yaml}\n", text, count=1)
 
 
 def _project_categories(p: dict) -> list:
@@ -1141,6 +1166,7 @@ def _do_translate(
     completion_tokens: int,
     do_publish: bool,
     project_key: str = "",
+    p: dict = None,
 ):
     """翻译英文 + 统计 token + 可选发布。"""
     # 翻译英文
@@ -1175,13 +1201,19 @@ def _do_translate(
                         _fix_frontmatter_slug(
                             _strip_outer_fence(_clean_code_block_whitespace(raw_en)), "-en"
                         ),
-                        STANDARD_TAGS_EN,
+                        _en_taxonomy(_project_tags(p, "en")) if p else STANDARD_TAGS_EN,
                     )
                 ),
                 "en",
             ),
             "en",
         )
+        # 英文稿分类强制用英文分类名（projects.json 里是中文，需翻译；
+        # 不能依赖 LLM 翻译，否则会把「架构」原样带过）。
+        if p:
+            en_content = _set_frontmatter_categories(
+                en_content, _en_taxonomy(_project_categories(p))
+            )
         zh_faq, en_faq = _count_faq_blocks(article), _count_faq_blocks(en_content)
         if zh_faq != en_faq:
             print(f"⚠️ FAQ 区块数不一致：中文 {zh_faq} 条 / 英文 {en_faq} 条，请复核英文稿")
@@ -1343,7 +1375,7 @@ def main():
         completion_tokens = 0
         # 跳到翻译步骤（务必传 project_key，否则系列内链无法排除自己 / 会误注入不相关项目）
         _do_translate(article, slug_en, fix_client, fix_model,
-                       prompt_tokens, completion_tokens, do_publish, project_key)
+                       prompt_tokens, completion_tokens, do_publish, project_key, p)
         return
 
     crew = create_crew(task="project-articles")
@@ -1841,7 +1873,7 @@ def main():
 
     # 翻译 + 统计 + 发布
     _do_translate(article, slug_en, fix_client, fix_model,
-                  prompt_tokens, completion_tokens, do_publish, project_key)
+                  prompt_tokens, completion_tokens, do_publish, project_key, p)
 
 
 if __name__ == "__main__":
