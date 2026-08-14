@@ -1322,9 +1322,21 @@ def main():
             legacy_path = ARTICLES_DIR / "zh" / f"{slug}.md"
             if legacy_path.exists():
                 zh_path = legacy_path
-            else:
-                print(f"❌ 中文文章不存在: {zh_path}")
-                sys.exit(1)
+        if not zh_path.exists():
+            # 兜底：归档（旧 move 语义）可能已将源搬到 wordpress-tools/articles/zh/，
+            # 或从该目录回读，确保归档后仍能翻译。
+            wt = os.getenv("WP_TOOLS_DIR")
+            if wt:
+                for cand in (
+                    Path(wt) / "articles" / "zh" / f"{slug_zh}.md",
+                    Path(wt) / "articles" / "zh" / f"{slug}.md",
+                ):
+                    if cand.exists():
+                        zh_path = cand
+                        break
+        if not zh_path.exists():
+            print(f"❌ 中文文章不存在: {zh_path}")
+            sys.exit(1)
         article = zh_path.read_text(encoding="utf-8")
         print(f"📖 已读取中文文章: {zh_path} ({len(article)} 字)")
         prompt_tokens = 0

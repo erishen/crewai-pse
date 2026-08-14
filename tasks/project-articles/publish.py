@@ -415,6 +415,18 @@ def main():
                 article_path = legacy_path
                 lang_slug = slug
         if not article_path.exists():
+            # 兜底：归档（旧 move 语义）可能已将源搬到 wordpress-tools/articles/，
+            # 从该目录回读，确保归档后仍能发布。
+            wt = os.getenv("WP_TOOLS_DIR")
+            if wt:
+                for cand in (
+                    Path(wt) / "articles" / lang / f"{lang_slug}.md",
+                    Path(wt) / "articles" / lang / f"{slug}.md",
+                ):
+                    if cand.exists():
+                        article_path = cand
+                        break
+        if not article_path.exists():
             print(f"  ⏭️  {lang} 文章不存在，跳过: {article_path}")
             continue
 
