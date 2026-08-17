@@ -50,9 +50,12 @@ def main():
         print("❌ 请设置 WP_TOOLS_DIR 环境变量指向 wordpress-tools 目录")
         sys.exit(1)
 
-    if not ARTICLES_DIR or not ARTICLES_DIR.exists():
-        print("❌ ARTICLES_DIR 未设置或目录不存在")
+    if not ARTICLES_DIR:
+        print("❌ ARTICLES_DIR 未设置")
         sys.exit(1)
+    # 保证 pse/ 目录结构（含 zh/en 子目录）始终存在，归档只移走具体文章，不删目录
+    for lang in ("zh", "en"):
+        (ARTICLES_DIR / lang).mkdir(parents=True, exist_ok=True)
 
     archived = 0
     for lang in ("zh", "en"):
@@ -70,16 +73,15 @@ def main():
         dest_dir = WP_TOOLS_DIR / "articles" / lang
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"{lang_slug}.md"
-        # 保留 pse/ 工作副本（生成/翻译/发布的唯一真值源），仅同步一份到
-        # wordpress-tools/articles/ 供 juejin/segmentfault/wechat 构建使用。
-        # 以前用 shutil.move 会把工作副本搬走，导致归档后 make translate / make publish
-        # 读不到 pse/ 下的源文件而失败；改为 copy 后两者都可用，重跑 archive 亦会刷新副本。
-        shutil.copy2(src, dest)
-        print(f"  📁 {lang} 已归档（副本）→ {dest}")
-        print(f"  🔒 工作副本保留于 {src}")
+        # 归档即搬走工作副本：源码移动到 wordpress-tools/articles/{zh,en} 供
+        # juejin/segmentfault/wechat 构建读取。translate/publish 在 pse/ 缺源时
+        # 会从 wordpress-tools/articles/ 回读（见 run.py / publish.py 兜底逻辑），
+        # 因此归档后无需保留 pse/ 副本。
+        shutil.move(src, dest)
+        print(f"  📁 {lang} 已归档（移走）→ {dest}")
         archived += 1
 
-    print(f"\n📊 归档完成: {archived} 篇（pse/ 工作副本已保留，可继续 make translate / make publish）")
+    print(f"\n📊 归档完成: {archived} 篇（pse/ 目录结构保留，文件已移走）")
 
 
 if __name__ == "__main__":
