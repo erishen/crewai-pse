@@ -6,5 +6,6 @@ outputs/
 .crewai/
 projects.json
 projects-published.json
+styles-history.json
 .src_cache/
 .pse_tmp/

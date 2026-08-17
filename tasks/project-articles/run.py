@@ -10,6 +10,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -1278,7 +1279,173 @@ STYLE_NAMES = {
     "D": "架构漫游型",
     "E": "对比分析型",
     "F": "工程实践型（show-your-work）",
+    "G": "源码解剖型（案发现场）",
+    "H": "数据/评测驱动型",
+    "I": "演进复盘型",
+    "J": "跨界迁移型",
+    "K": "反常识挑战型",
 }
+
+# 需要程序硬控章节骨架的风格（逐节生成，杜绝模型自选章节标题退化成通用模板）。
+# 目前 F 与 G-K 走逐节流；A-E 沿用全文单 Writer 流。
+_STYLE_SPECS = {
+    "G": [
+        ("案发现场",
+         "第一人称描述一个真实事故/异常现象：看到了什么报错、什么用户反馈、表现是什么，"
+         "并给出最小复现现场。讲清为什么这是真问题。"
+         "【禁】教学口吻（你试试/跟着做）、编造事故、平行罗列其他功能。"),
+        ("初步排查",
+         "承接事故，列出当时的怀疑方向，逐个交代用真实命令/日志/手段排除了哪些。"
+         "只围绕本事故追踪，不展开本项目其他特性。严禁编造命令/日志/符号。"),
+        ("定位根因",
+         "逐行阅读真实源码定位根因：嫌疑集中在哪个函数/哪段逻辑，为什么它才是元凶。"
+         "引用真实代码片段作为证据，严禁编造任何函数/类/文件名。"),
+        ("修复与验证",
+         "写修复方案：改了哪里、怎么做（真实代码），以及如何验证修复确实生效"
+         "（真实测试/命令/复现对比）。严禁虚构验证手段。"),
+        ("复盘",
+         "收尾：沉淀一条可迁移的排障方法论或检查清单（一句话即可）。"
+         "【禁】退化为功能列表或特性罗列。"),
+    ],
+    "H": [
+        ("待证假设",
+         "明确提出本文要验证的核心假设与评价指标（如「自建检索还是上向量库：延迟与准确率谁赢」），"
+         "说清指标如何度量。"
+         "【禁】虚构指标/数字、抛开数据空谈设计。"),
+        ("基线数据",
+         "给出基线测量结果：数字是多少、在什么环境测的、如何复现。"
+         "所有数字必须由真实实验获得，严禁编造。"),
+        ("实验与对比",
+         "把若干候选方案摆在同一指标体系下对比，结论由数字自然推出，而不是先有结论再找数字。"
+         "引用真实配置/代码解释差异来源。"),
+        ("落地",
+         "数据指向的结论如何在本项目落地：选了哪条路、代价摊销在哪里、关键代码是什么（真实源码）。"),
+        ("可复现",
+         "给出让别人能复现这套数据的手续：命令/脚本/环境说明。"
+         "收束为一条「用数据做决策」的可迁移原则。"),
+    ],
+    "I": [
+        ("起点",
+         "第一人称交代项目最初形态：最开始想解决什么、第一版长什么样、结构多简单。"
+         "【禁】直接从最终架构讲起（那是 D）、按功能模块罗列。"),
+        ("早期形态",
+         "写第一版实际做了什么、藏着哪些将引爆后续问题的取舍——这些裂缝为什么当时看不出来。"),
+        ("中途转向",
+         "写后续迭代的关键转折（正文里可含 2-3 个 `###` 子代小节，各讲一次里程碑或路线调整）。"
+         "每代讲清：老方案暴露了什么、换成了什么、代价与收益。"), 
+        ("未曾采用",
+         "盘点认真考虑过但最终放弃的方向，为什么放弃（复杂度/收益/时机）。"
+         "这会增加文章的诚意与可信度。"),
+        ("沉淀",
+         "收尾：从演进史中沉淀出一条可迁移的原则/方法论。"
+         "【禁】功能列表、夸大词汇。"),
+    ],
+    "J": [
+        ("源头方法",
+         "先把「别处」的成熟方法讲清楚：它来自哪个领域/项目、解决什么问题、核心机制是什么。"
+         "这是迁移的正确叙事起点（先有源，后有映射）。"),
+        ("映射",
+         "写如何把源方法翻译到本项目领域：一一对应关系、为什么适配、哪些点不能生搬硬套。"
+         "引用真实代码/结构说明映射细节。"),
+        ("落地改造",
+         "写迁移时具体怎么裁剪/增强：改了源方法哪些部分、付出了什么代价、关键代码（真实源码）。"
+         "严禁编造符号。"),
+        ("效果",
+         "写迁移后的实际收益：能用数据/场景佐证更好（真实而非想象）。"),
+        ("适用边界",
+         "收尾：什么时候该迁移、什么时候别硬迁——边界与判断标尺。"
+         "【禁】把它写成项目说明书。"),
+    ],
+    "K": [
+        ("流行做法",
+         "客观描述多数开发者的默认做法：它为什么流行、在什么场景下确实正确。"
+         "【禁】一上来就贬低、不点名批评任何具体产品。"),
+        ("质疑",
+         "指出流行做法的适用边界：在哪些约束下它会失效/不够好。"
+         "描述现象与代价，不攻击具体竞品。"),
+        ("替代方案",
+         "亮出本项目换用的做法：先讲思路和直觉，再给真实代码支撑。"
+         "严禁编造符号，代码须来自真实源码。"),
+        ("证据",
+         "用真实数据/代码/对比证据说明替代方案为什么成立——验证环节要能 grep 到依据。"),
+        ("边界",
+         "收尾：什么时候仍应回到流行做法。客观给出边界，不把反常识写成绝对真理。"),
+    ],
+}
+
+
+def _pick_variants(style: str) -> tuple:
+    """为一次生成随机选择「表述变体」（开场钩子/人称/时间轴），
+    让同一风格在不同文章间也有书写差异，进一步降低成稿雷同感。
+
+    变体是方向性指导，不改变风格的核心结构与禁止项。
+    """
+    hooks = [
+        "开场先用一个具体场景/画面把读者拉进上下文（谁在什么处境下、看到了什么）。",
+        "开场先抛出一组能反映问题分量的数据或数字，再进入叙事。",
+        "开场直接点出本文的核心结论或反直觉的地方，再展开论证。",
+        "开场就用第一人称说出当时的处境与纠结（我在做什么、卡在哪）。",
+    ]
+    person = random.choice([
+        "全文以第一人称「我」贯穿，保留真实思考痕迹。",
+        "全文以客观陈述为主，多用第三人称，少出现「我」。",
+    ])
+    timeline = random.choice([
+        "按时间顺叙推进：先因后果。",
+        "用倒叙：先把最终结果亮出来，再回溯过程。",
+    ])
+    return random.choice(hooks), person, timeline
+
+# 风格使用记录文件：每篇成稿记下所用风格，供自动选择器做「最少使用优先」轮转，
+# 避免连续文章重样（自由选择时 LLM 容易惯性复用某几种风格）。
+STYLE_HISTORY_FILE = BASE / "styles-history.json"
+
+
+def _load_style_history() -> dict:
+    if STYLE_HISTORY_FILE.exists():
+        try:
+            return json.loads(STYLE_HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _pick_style(project_key: str, p: dict) -> str:
+    """自动选择叙事风格，保证成稿多样性。
+
+    优先级：
+    1. projects.json 该项目显式声明 `style` 字段 → 以人力指定为准（最高优先）。
+    2. 否则从 6 种风格里选「历史上用得最少」的；候选仍多个时随机挑一个。
+    3. 避开本项目上次用过的风格（若因此只剩一种候选，则允许复用）。
+    """
+    explicit = (p or {}).get("style")
+    if explicit and str(explicit).strip().upper() in STYLE_NAMES:
+        return str(explicit).strip().upper()
+    history = _load_style_history()
+    counts = {k: 0 for k in STYLE_NAMES}
+    for letter in history.values():
+        letter = str(letter).upper()
+        if letter in counts:
+            counts[letter] += 1
+    min_count = min(counts.values())
+    candidates = [k for k, c in counts.items() if c == min_count]
+    last = str(history.get(project_key, "")).upper()
+    if len(candidates) > 1 and last in candidates:
+        candidates = [k for k in candidates if k != last]
+    if not candidates:
+        candidates = list(STYLE_NAMES)
+    return random.choice(candidates)
+
+
+def _record_style(project_key: str, letter: str) -> None:
+    history = _load_style_history()
+    history[project_key] = letter
+    try:
+        STYLE_HISTORY_FILE.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        print(f"⚠️ 记录风格历史失败（不影响本次产出）: {e}")
 
 
 def main():
@@ -1317,6 +1484,13 @@ def main():
         print(f"❌ 源码目录不存在: {source_dir}")
         print("请检查 projects.json 中该项目的 source_dir，或 PSE_ROOT 环境变量是否指向仓库根。")
         sys.exit(1)
+
+    # 未用 --style 显式指定时，程序化选择叙事风格（最少使用 + 随机轮转），
+    # 避免每次由 LLM 自由选择导致风格重样；随后强制注入 Planner 与 Writer。
+    if style_override is None:
+        style_override = _pick_style(project_key, p)
+        print(f"🎲 自动选择叙事风格: {style_override}. {STYLE_NAMES[style_override]}")
+
 
     # 镜像目标项目源码进沙箱缓存：read_file 沙箱限定在 crewai-pse 仓库根，
     # 无法直接读取 frameworks/langgraph-pse 等外部目录。镜像后 LLM 经 read_file
@@ -1378,15 +1552,48 @@ def main():
                        prompt_tokens, completion_tokens, do_publish, project_key, p)
         return
 
+    # 作者人设注入：仅塑造第一人称的语气/视角，不构成事实依据。
+    # author.md 来自个人知识库人设提炼（不含财务/家庭/具体公司经历），
+    # 供 F / G-K 等第一人称风格写出贴合作者真实写法的文字。
+    author_block = ""
+    _author_file = BASE / "author.md"
+    if _author_file.exists():
+        try:
+            _author_text = _author_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            _author_text = ""
+        if _author_text:
+            author_block = (
+                "\n\n## 作者人设（仅用于第一人称的语气与视角，不构成事实依据）\n"
+                f"{_author_text}\n"
+                "要求：仅据此塑造“我”的说话方式、取舍观与视角；"
+                "严禁编造本段之外的经历或事实；不要在本段文字原样出现在正文里，也不要在文中做自我评价。"
+            )
+
     crew = create_crew(task="project-articles")
 
     # ── Phase 1: Planner 生成提纲 ──
+    # 风格强制指令初始化；若该风格有程序化骨架，提示 Planner 围绕骨架组织提纲。
+    spec_block = ""
+    if style_override in _STYLE_SPECS:
+        secs = " → ".join(s[0] for s in _STYLE_SPECS[style_override])
+        spec_block = f"\n该风格采用程序化章节骨架，必须围绕此骨架组织提纲：{secs}"
+    # 表述变体：整篇文章只随机一次，Planner 与逐节 Writer 共用同一组，防止前后不一致
+    hook, person, timeline = _pick_variants(style_override) if style_override else ("", "", "")
+    variant_note = (
+        "\n\n## 表述变体（本次随机，要求遵循）\n"
+        f"- 开场：{hook}\n"
+        f"- 人称：{person}\n"
+        f"- 时间轴：{timeline}\n"
+        "以上变体只改变表达方式，不得破坏本风格的核心结构与禁止项。\n"
+    ) if style_override else ""
     style_instruction = ""
     if style_override:
         style_instruction = (
             f"\n\n## ⚠️ 风格强制\n"
             f"**必须使用 {style_override}. {STYLE_NAMES[style_override]} 风格**，不要选择其他风格。"
             f"所有写作严格按该风格的结构组织，不得退回通用模板。\n"
+            f"{spec_block}{variant_note}"
         )
 
     # F 风格（工程实践型 show-your-work）专属硬规则：禁止退化成设计决策型(B)或功能展示
@@ -1506,8 +1713,8 @@ def main():
                 source_excerpts.append(f"### 文件: {fpath}\n```{lang_tag}{content}\n```")
         excerpts_block = "\n\n".join(source_excerpts) if source_excerpts else "（无源码片段，仅凭提纲写作）"
 
-        # ── F 风格：5 段式逐节生成（程序硬控 H2，杜绝模型自选章节标题）──
-        if style_override == "F":
+        # ── F / G-K 风格：逐节生成（程序硬控 H2，杜绝模型自选章节标题，防止退化成通用模板）──
+        if style_override == "F" or style_override in _STYLE_SPECS:
             _FIVE_PART_SPEC = [
                 ("出发点",
                  "用第一人称从一个真实工程决策场景切入：我在做这个项目时，卡在一个具体选择（比如 A 还是 B），"
@@ -1527,6 +1734,7 @@ def main():
                  "收尾：最终效果如何，并沉淀一条可迁移的方法论/原则（一句话即可）。"
                  "【禁】退化为功能列表或特性罗列。"),
             ]
+            spec = (_FIVE_PART_SPEC if style_override == "F" else _STYLE_SPECS[style_override])
             real_symbols = sorted(_extract_real_symbols(source_dir))[:80]
             symbol_hint = (
                 "以下符号已确认存在于源码，引用代码时优先使用，严禁编造白名单外的符号：\n"
@@ -1535,13 +1743,14 @@ def main():
             )
             section_bodies: list[str] = []
             prev_text = "（本节是全文第一节）"
-            for idx, (header, directive) in enumerate(_FIVE_PART_SPEC, 1):
+            for idx, (header, directive) in enumerate(spec, 1):
                 writer_agent = create_writer(task="project-articles")
                 sec_task = Task(
                     description=f"""你是一名技术文章作者。基于【真实源码片段】和【核心工程决策线】，写文章「{header}」这一节的正文。
 
 ## 核心工程决策线（全文主线，用第一人称展开）
 {decision_line or p['desc']}
+{author_block}
 
 ## 真实源码片段（你只能引用这里出现的代码/符号，严禁编造任何函数/类/文件名）
 {excerpts_block}
@@ -1550,7 +1759,7 @@ def main():
 {symbol_hint}
 
 ## 本节要写的内容
-{directive}
+{directive}{variant_note}
 
 ## 已写好的前面几节（保持连贯，本节承接它们）
 {prev_text}
@@ -1566,7 +1775,7 @@ def main():
                     expected_output=f"「{header}」一节的正文（无 H2 标题、无 Front Matter）",
                     agent=writer_agent,
                 )
-                print(f"\n🚀 Phase 2 [{idx}/5]: 生成「{header}」节...")
+                print(f"\n🚀 Phase 2 [{idx}/{len(spec)}]: 生成「{header}」节...")
                 crew_w = Crew(agents=[writer_agent], tasks=[sec_task], process=Process.sequential, verbose=True)
                 try:
                     sec_out = crew_w.kickoff()
@@ -1624,6 +1833,7 @@ def main():
 
 ## 核心工程决策线（围绕这条主线展开，用第一人称）
 {decision_line or p['desc']}
+{author_block}
 
 ## 真实源码片段（你只能引用这里出现的代码/符号，严禁编造任何函数/类/文件名）
 {excerpts_block}
@@ -1637,8 +1847,8 @@ def main():
 6. 不提及本地绝对路径、缓存目录等内部信息。
 7. 你只写本项目（{project_key}：{p['desc']}，GitHub: {p['repo']}）。绝对禁止写任何关于 AI 写作框架、多 Agent、验证机制、防幻觉、或本写作管线本身的内容。
 
-{style_extra}""",
-                expected_output="一篇完整的中文 Markdown 技术文章（从第一个标题开始，无 Front Matter）",
+{style_instruction}{style_extra}""",
+        expected_output="一篇完整的中文 Markdown 技术文章（从第一个标题开始，无 Front Matter）",
                 agent=writer_agent,
             )
 
@@ -1718,10 +1928,10 @@ def main():
 
             print(f"  ❌ 虚构内容 {len(fictitious)} 项: {', '.join(fictitious)}")
 
-            # ── F 风格：结构优先 ──
-            # 五段式由程序逐节生成，绝不能再交 LLM 整篇重写（会打回通用架构模板）。
-            # 一律用确定性程序化删改修正虚构引用，保留「出发点/踩坑/调整/验证/结果」五段式。
-            if style_override == "F":
+            # ── F / G-K 风格：结构优先 ──
+            # 章节由程序逐节生成，绝不能再交 LLM 整篇重写（会打回通用架构模板）。
+            # 一律用确定性程序化删改修正虚构引用，保留骨架结构。
+            if style_override == "F" or style_override in _STYLE_SPECS:
                 article = _strip_exaggerated(article)
                 article = _strip_fictional_refs(article, code_refs)
                 fictitious, verified = _verify_article(article, source_dir)
@@ -1735,7 +1945,7 @@ def main():
                     nr_path.write_text(article, encoding="utf-8")
                     print(f"   已保存待复核 → {nr_path}")
                     return  # 不翻译、不发布
-                print(f"  ✅ 程序化修正完成，虚构引用已清除（验证通过 {len(verified)} 项），五段式结构完好")
+                print(f"  ✅ 程序化修正完成，虚构引用已清除（验证通过 {len(verified)} 项），骨架结构完好")
                 break
 
             if attempt < max_retries:
@@ -1870,6 +2080,7 @@ def main():
         print(f"📝 TL;DR: {zh_tldr_count} 条")
     zh_path.write_text(article, encoding="utf-8")
     print(f"\n✅ 中文已保存 → {zh_path}")
+    _record_style(project_key, style_override)
 
     # 翻译 + 统计 + 发布
     _do_translate(article, slug_en, fix_client, fix_model,
