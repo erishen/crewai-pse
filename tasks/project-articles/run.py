@@ -1920,6 +1920,7 @@ def main():
                 prev_text = "\n\n".join(section_bodies)
 
             body_text = _dedup_repeated_blocks("\n\n".join(section_bodies))
+            body_text = _strip_planning_remnants(body_text)
             # 程序生成「源码导航」小节（确定性，用真实文件列表）
             nav_files = []
             for b in batches:
