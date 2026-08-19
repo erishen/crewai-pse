@@ -536,8 +536,15 @@ def _load_projects() -> dict:
     return projects
 
 
-def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str]]:
-    """程序化验证：grep 检查代码引用 + 环境变量 + 安装命令 + CLI 入口点。返回 (虚构列表, 正确列表)。"""
+def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str], list[str]]:
+    """程序化验证：grep 检查代码引用 + 环境变量 + 安装命令 + CLI 入口点。
+
+    返回 (虚构列表, 正确列表, 待核数字列表)：
+    - 虚构列表：确定虚构（代码引用/环境变量/夸大词/思维链泄漏），触发隔离；
+    - 正确列表：已验证存在；
+    - 待核数字列表：疑似实验/基准数字（如 99.7% / 12ms / 3.2s），需人工确认是否来自真实实验。
+      仅告警、不隔离——避免误伤含合法端口号/版本号/配置值的技术文。
+    """
     refs = set(re.findall(r"`([A-Za-z_][\w._]*(?:/[A-Za-z_][\w._]*)*)`", article))
     # 代码块内提取：def/class 定义、import 目标、函数调用（snake_case_with_underscore 或 CamelCase）
     # 支持 Python 和 JS/TS 代码块
@@ -756,7 +763,46 @@ def _verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str
         if keyword in article:
             fictitious.append(f"[夸大] {keyword} — {reason}")
 
-    return fictitious, verified
+    # ── 思维链/内部独白泄漏硬闸 ──
+    # 任何风格都不允许 Thought:/Answer:/内容大纲/关键发现 等推理独白进入成品。
+    # 此处为兜底：即便正文清洗漏网，也标记为虚构，由调用方隔离到 needs-review。
+    if _has_reasoning_leak(article):
+        fictitious.append("[思维链泄漏] 检测到内部推理独白（Thought:/Answer:/内容大纲 等）泄漏到成品，需人工复核")
+
+    # ── 待核数字（疑似编造的基准/实验指标）──
+    # 用户铁律：所有数字必须由真实实验获得，严禁编造。但代码层无法判断数字真假，
+    # 故仅做「疑似基准指标」软提示，交由人工复核，不触发隔离。
+    # 命中两类高危信号：
+    #  (a) 文章宣称「实测/实验/基准/压测」并紧跟精确数值（如「实测 99.7%」「压测 3.2s」）；
+    #  (b) 游离的基准式精确量词：2~3 位百分数(含小数，如 99.7%/94%)、毫秒(12ms)、秒级延迟(3.2s)、倍数(50/50)。
+    metrics_to_verify: list[str] = []
+    _CLAIM_RE = re.compile(
+        r"(实测|实验数据|真实实验|基准(?:测试|结果)?|压测|测量|跑分)[^。\n]{0,40}?"
+        r"(\d+(?:\.\d+)?\s*(?:ms|%|倍|秒|s|rps|qps|tps))",
+        re.IGNORECASE,
+    )
+    claim_spans: list[tuple[int, int]] = []
+    for m in _CLAIM_RE.finditer(article):
+        claim_spans.append((m.start(), m.end()))
+        metrics_to_verify.append(f"[待核数字] 宣称「{m.group(1)}」并给出数值 {m.group(2).strip()}，请确认来自真实实验")
+    _PRECISE_RE = re.compile(
+        r"(?<![\w.])(?:\d{2,3}(?:\.\d+)?\s*%|"
+        r"\d+(?:\.\d+)?\s*ms\b|"
+        r"\d+(?:\.\d+)?\s*[skm]?s\b|"
+        r"\d+\s*倍\b|"
+        r"\d{1,3}/\d{1,3}\b)"
+    )
+    for m in _PRECISE_RE.finditer(article):
+        # 若已是被「宣称」句式覆盖的数值，跳过，避免重复告警
+        if any(s <= m.start() < e for s, e in claim_spans):
+            continue
+        tok = m.group(0).strip()
+        # 排除明显合法的技术常量：端口、版本号、@Transactional 隔离级别、HTTP 状态码等
+        if re.search(r"(?:\b(?:POST|GET|PUT|DELETE|PATCH)\b|\bport\b|\bversion\b|\bv\d|\blocalhost:\d|\b127\.0\.0\.1:\d)", article[max(0, m.start() - 30):m.end() + 10], re.IGNORECASE):
+            continue
+        metrics_to_verify.append(f"[待核数字] 含游离精确量词 {tok}，若属性能/效果数据须来自真实实验")
+
+    return fictitious, verified, metrics_to_verify
 
 
 def _is_valid_article(text: str) -> bool:
@@ -833,6 +879,71 @@ _PLAN_MARKERS = [
     "首先读取关键", "准备好后开始撰写", "现在我读取源码", "开始撰写文章",
 ]
 
+# ReAct / 内部推理独白标记（思维链泄漏）。极不可能出现在真实技术散文里，
+# 一旦出现即视为污染，需从正文与 front matter 中清除。
+_REASONING_LEAK_MARKERS = (
+    "Thought:", "最终 Answer:", "内容大纲", "让我开始撰写正文",
+    "关键发现", "让我开始撰写", "下面开始撰写", "我已读取了", "我已经读取",
+)
+# 整行删除：行内出现下列模式之一即整行移除（覆盖中英文 Thought / Answer / 大纲 / 关键发现）。
+_REASONING_LEAK_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"Thought\s*:.*"
+    r"|最终\s*Answer\s*:.*"
+    r"|Answer\s*:.*"
+    r"|内容大纲\s*[:：].*"
+    r"|让我开始撰写正文.*"
+    r"|关键发现\s*[:：].*"
+    r"|我已?读取了足够多.*"
+    r"|让我开始撰写.*"
+    r"|下面开始撰写.*"
+    r")\s*$",
+    re.MULTILINE,
+)
+
+
+def _has_reasoning_leak(text: str) -> bool:
+    """检测成品（含 front matter）是否混入了内部推理独白（Thought:/Answer:/内容大纲/关键发现 等）。"""
+    if not text:
+        return False
+    if _REASONING_LEAK_LINE_RE.search(text):
+        return True
+    # front matter 的 title/description 可能整段就是 Thought:...（无换行），再兜底查一次标记
+    return any(mk in text for mk in _REASONING_LEAK_MARKERS)
+
+
+def _strip_reasoning_leaks(text: str) -> str:
+    """删除正文里任意位置的思维链泄漏行（Thought:/Answer:/内容大纲/关键发现 等）。"""
+    return _REASONING_LEAK_LINE_RE.sub("", text)
+
+
+def _sanitize_frontmatter(article: str, desc_fallback: str = "") -> str:
+    """净化 front matter 的 title/description：若其值混入了推理独白标记，则回退。
+
+    - title 污染 → 回退 desc_fallback（通常是 p['desc']）
+    - description 污染 → 整行删除（后续 _auto_description 会干净地重新注入）
+    不改变文章其它内容与结构。
+    """
+    m = re.match(r"^---\n(.*?)\n---\n", article, re.DOTALL)
+    if not m:
+        return article
+    fm = m.group(1)
+    cleaned = []
+    for ln in fm.split("\n"):
+        low = ln.strip()
+        if low.startswith("title:"):
+            val = ln.split(":", 1)[1].strip().strip('"').strip("'")
+            if any(mk in val for mk in _REASONING_LEAK_MARKERS):
+                cleaned.append(f"title: {desc_fallback or ''}")
+                continue
+        if low.startswith("description:"):
+            val = ln.split(":", 1)[1].strip().strip('"').strip("'")
+            if any(mk in val for mk in _REASONING_LEAK_MARKERS):
+                continue  # 删除整行，后续自动注入干净 description
+        cleaned.append(ln)
+    new_fm = "\n".join(cleaned)
+    return f"---\n{new_fm}\n---\n" + article[m.end():]
+
 
 def _strip_planning_remnants(text: str) -> str:
     """剥离模型偶尔泄漏到成品里的内部规划独白
@@ -840,9 +951,12 @@ def _strip_planning_remnants(text: str) -> str:
 
     新管线中 Writer Agent 不带文件工具，本不应出现读取类独白；但作为保险，
     仍从开头与尾部双向剥离含标记的连续行（标记短语极难出现在真实散文里）。
+    同时清除散落在正文任意位置的 ReAct 思维链泄漏行（Thought:/Answer:/内容大纲 等）。
     """
+    # 1) 先清除散落在任意位置的思维链泄漏行
+    text = _strip_reasoning_leaks(text)
     lines = text.split("\n")
-    # 剥开头独白：跳过连续含标记的行（及空行），直到首行不含标记
+    # 2) 剥开头独白：跳过连续含标记的行（及空行），直到首行不含标记
     start = 0
     n = len(lines)
     while start < n:
@@ -855,10 +969,10 @@ def _strip_planning_remnants(text: str) -> str:
             continue
         break
     lines = lines[start:]
-    # 剥尾部独白：从末尾向前删除含标记的行
+    # 3) 剥尾部独白：从末尾向前删除含标记的行
     while lines and any(mk in lines[-1].strip() for mk in _PLAN_MARKERS):
         lines.pop()
-    # 去掉因截断残留的孤立分隔线 / 空行
+    # 4) 去掉因截断残留的孤立分隔线 / 空行
     while lines and lines[-1].strip() in ("---", ""):
         lines.pop()
     while lines and lines[0].strip() in ("---", ""):
@@ -937,10 +1051,14 @@ def _extract_title(text: str) -> str:
         text,
     )
     if m:
-        return m.group(1).strip().strip("*").strip()
-    m = re.search(r"^#{1,2}\s+(.+?)\s*$", text, re.MULTILINE)
-    if m:
-        return m.group(1).strip()
+        cand = m.group(1).strip().strip("*").strip()
+        if not any(mk in cand for mk in _REASONING_LEAK_MARKERS):
+            return cand
+    # 首个 H1/H2，但跳过混入思维链独白的行（如「## Thought: ...」）
+    for m in re.finditer(r"^#{1,2}\s+(.+?)\s*$", text, re.MULTILINE):
+        cand = m.group(1).strip().strip("*").strip()
+        if cand and not any(mk in cand for mk in _REASONING_LEAK_MARKERS):
+            return cand
     return ""
 
 
@@ -1820,7 +1938,7 @@ def main():
                 f"categories: [{', '.join(f'\"{c}\"' for c in _project_categories(p))}]\n"
                 f"---\n\n"
             )
-            article = front_matter + body_text
+            article = _sanitize_frontmatter(front_matter + body_text, p["desc"])
         else:
             # 非 F 风格：沿用单 Writer 方案
             structure_rule = f"按 Planner 提纲的结构组织：\n{outline[:1500]}\n"
@@ -1885,7 +2003,7 @@ def main():
                 f"categories: [{', '.join(f'\"{c}\"' for c in _project_categories(p))}]\n"
                 f"---\n\n"
             )
-            article = front_matter + body_text
+            article = _sanitize_frontmatter(front_matter + body_text, p["desc"])
     finally:
         try:
             subprocess.run(["rm", "-rf", str(tmpdir)], check=False)
@@ -1907,6 +2025,17 @@ def main():
         print(f"   已保存待复核 → {nr_path}")
         return
 
+    # 思维链泄漏硬闸：任何风格都不允许内部推理独白进入成品。
+    # 直接隔离待复核，绝不翻译/发布（避免把泄漏文本送入翻译 Agent 二次污染）。
+    if _has_reasoning_leak(article):
+        print("❌ 检测到思维链/内部独白泄漏（Thought:/Answer:/内容大纲 等），隔离待复核，不翻译不发布")
+        nr_dir = ARTICLES_DIR / "needs-review"
+        nr_dir.mkdir(parents=True, exist_ok=True)
+        nr_path = nr_dir / f"{slug_zh}.md"
+        nr_path.write_text(article, encoding="utf-8")
+        print(f"   已保存待复核 → {nr_path}")
+        return
+
     # 主体 token 用量：Planner（crew）在 Phase 2 之后补；
     # Phase 2 的 Writer 用量已在各分支内累加（F 逐节、非 F 单节）。
     usage = getattr(crew, "usage_metrics", None)
@@ -1918,9 +2047,13 @@ def main():
     # 程序化验证 + 自动修正
     max_retries = 3
     for attempt in range(1, max_retries + 1):
-        fictitious, verified = _verify_article(article, source_dir)
+        fictitious, verified, metrics = _verify_article(article, source_dir)
         print(f"\n{'='*60}")
-        print(f"  核查 (第{attempt}次) — 虚构 {len(fictitious)} 项，已验证 {len(verified)} 项")
+        print(f"  核查 (第{attempt}次) — 虚构 {len(fictitious)} 项，已验证 {len(verified)} 项，待核数字 {len(metrics)} 项")
+        if metrics:
+            print(f"  ⚠️ 待核数字 {len(metrics)} 项（疑似基准/实验指标，请人工确认是否来自真实实验，不隔离）:")
+            for m in metrics:
+                print(f"     - {m}")
         if fictitious:
             # 分离代码引用和夸大词
             code_refs = [f for f in fictitious if not f.startswith("[夸大]")]
@@ -1934,7 +2067,7 @@ def main():
             if style_override == "F" or style_override in _STYLE_SPECS:
                 article = _strip_exaggerated(article)
                 article = _strip_fictional_refs(article, code_refs)
-                fictitious, verified = _verify_article(article, source_dir)
+                fictitious, verified, metrics = _verify_article(article, source_dir)
                 code_refs = [f for f in fictitious if not f.startswith("[夸大]")]
                 if code_refs:
                     print(f"\n❌ 程序化修正后仍残留 {len(code_refs)} 项虚构引用: {', '.join(code_refs)}")
@@ -2001,7 +2134,7 @@ def main():
                 # 兜底：程序化删除顽固的虚构代码引用 + 夸大词（确定性，不依赖 LLM）
                 article = _strip_exaggerated(article)
                 article = _strip_fictional_refs(article, code_refs)
-                fictitious, verified = _verify_article(article, source_dir)
+                fictitious, verified, metrics = _verify_article(article, source_dir)
                 code_refs = [f for f in fictitious if not f.startswith("[夸大]")]
                 if code_refs:
                     # ❌ 信任闸门：残留虚构内容 → 隔离，绝不发布/翻译
