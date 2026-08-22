@@ -266,24 +266,43 @@ def _auto_generate_faq(body: str, project: dict, decision_line: str,
         user_content += f"\n文章正文：\n{text}"
     else:
         user_content += "\n（未提供文章正文，请仅依据上述项目描述生成通用且准确的 FAQ。）"
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_msg},
-                {"role": "user", "content": user_content},
-            ],
-            max_tokens=900,
-            temperature=0.4,
-        )
-        out = (resp.choices[0].message.content or "").strip()
-        # 兜底：确保外层 [faq]/[/faq] 包裹
+    last_err = ""
+    for _attempt in range(2):  # 模型偶发空输出/漏闭合标签，给一次重试机会
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": sys_msg},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=900,
+                temperature=0.4,
+            )
+            out = (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            last_err = f"调用失败: {e}"
+            continue
+        # 剥离可能的 Markdown 围栏与大小写标签变体
+        out = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", out).strip()
+        out = out.replace("[FAQ]", "[faq]").replace("[/FAQ]", "[/faq]")
         if "[faq]" not in out:
+            if not out:
+                last_err = "模型返回空内容"
+                continue
             out = f"[faq]\n{out}\n[/faq]"
+        # 模型偶发只写 [faq] 开头、漏掉 [/faq] 闭合 → 正则解析不出完整块，
+        # 上层计数为 0 却显示「已自动补入」，必须在此补齐
+        if out.count("[/faq]") < out.count("[faq]"):
+            out = out.rstrip() + "\n[/faq]"
+        # 硬校验：至少解析出 1 个含问答对的完整块，否则视为失败并重试
+        if not any(
+            _FAQ_QA_RE.search(body) for _attrs, body in _FAQ_BLOCK_RE.findall(out)
+        ):
+            last_err = f"输出缺少问答对：{out[:120]!r}"
+            continue
         return out
-    except Exception as e:
-        print(f"⚠️ 自动生成 FAQ 失败: {e}")
-        return ""
+    print(f"⚠️ 自动生成 FAQ 失败（重试后仍无效）：{last_err}")
+    return ""
 
 
 def _extract_frontmatter(text: str):
