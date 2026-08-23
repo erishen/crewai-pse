@@ -209,19 +209,11 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
         print(f"  ⚠️ 获取链接页面失败：{e}")
         return
 
-    # 构建条目：中文标题 + （若已发布英文版）英文链接
-    en_link = pub_info.get("en", {}).get("link")
-    en_part = ""
-    if en_link:
-        en_part = (
-            f' · <a href="{en_link}" '
-            f'style="color:#2563eb;text-decoration:none;">English</a>'
-        )
+    # 构建条目：日期 + 中文标题（英文链接不再展示，语言切换由文章页徽章负责）
     new_item = (
         f'<li style="margin-bottom:8px;">'
         f'<span style="color:#9ca3af;">[{month}]</span> '
-        f'<a href="{link}" style="color:#374151;text-decoration:none;">{title}</a>'
-        f'{en_part}</li>\n'
+        f'<a href="{link}" style="color:#374151;text-decoration:none;">{title}</a></li>\n'
     )
 
     # 若链接已存在，整条 <li> 替换（幂等更新标题与英文链接）；否则在列表头部插入新条目
