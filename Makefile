@@ -23,7 +23,7 @@ lint:
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	rm -rf .crewai/ dist/ *.egg-info
+	rm -rf .crewai/ dist/ *.egg-info tasks/project-articles/.src_cache
 
 # 默认用免费 Agnes 模型（成本敏感模式）
 articles articles-agnes: ## CrewAI 撰写项目技术文章（默认 Agnes 免费）用法: make articles [P=llamaindex-pse] [FLAGS=--publish]
@@ -48,13 +48,16 @@ translate-paid: ## 仅翻译（付费 deepseek，质量优先）用法: make tra
 publish: ## 发布文章到线上 用法: make publish [P=llamaindex-pse]
 	$(PY) tasks/project-articles/publish.py $(P) $(FLAGS)
 
-archive: ## 归档文章到 wordpress-tools，并重建 juejin/segmentfault/wechat 副本 用法: make archive [P=rag-task-service]
+archive: ## 归档文章到 wordpress-tools，并重建 juejin/segmentfault/wechat 副本 + 关键词索引 用法: make archive [P=rag-task-service]
 	$(PY) tasks/project-articles/archive.py $(P)
 	@if [ -n "$(WP_TOOLS_DIR)" ] && [ -d "$(WP_TOOLS_DIR)" ]; then \
 	  cd "$(WP_TOOLS_DIR)" && \
 	  $(NODE) src/publish/build-juejin-from-zh.mjs $(SLUG_ZH).md && \
 	  $(NODE) src/publish/build-segmentfault.mjs $(SLUG_ZH) && \
 	  $(NODE) src/wechat/wechat-convert.js $(SLUG_ZH).md ; \
+	  python3 tools/gen_keywords_index.py ; \
 	else \
-	  echo "⚠️ 未设置/不存在 WP_TOOLS_DIR，跳过 juejin/segmentfault/wechat 副本重建"; \
+	  echo "⚠️ 未设置/不存在 WP_TOOLS_DIR，跳过 juejin/segmentfault/wechat 副本重建与关键词索引更新"; \
 	fi
+	@echo "🧹 清理 $(P) 的源码镜像缓存"
+	@rm -rf tasks/project-articles/.src_cache/$(P) && echo "  已删除 .src_cache/$(P)/" || echo "  .src_cache/$(P)/ 不存在，跳过"
