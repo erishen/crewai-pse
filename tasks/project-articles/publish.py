@@ -221,8 +221,7 @@ def _update_links_page(project_key: str, pub_info: dict) -> None:
         f'<li style="margin-bottom:8px;">'
         f'<span style="color:#9ca3af;">[{month}]</span> '
         f'<a href="{link}" style="color:#374151;text-decoration:none;">{title}</a>'
-        f'{en_part} '
-        f'<span style="color:#9ca3af;font-size:12px;">(AI)</span></li>\n'
+        f'{en_part}</li>\n'
     )
 
     # 若链接已存在，整条 <li> 替换（幂等更新标题与英文链接）；否则在列表头部插入新条目
