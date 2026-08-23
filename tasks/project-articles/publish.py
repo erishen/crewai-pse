@@ -109,17 +109,23 @@ def _parse_output(stdout: str) -> dict:
 
 
 def _add_cross_links(articles_dir: Path, slug: str, slug_zh: str, slug_en: str, pub_info: dict) -> None:
-    """在文章 frontmatter 后插入对方语言的链接。"""
+    """清理文章里的内联交叉语言横幅（不再注入）。
+
+    主题 language-switcher.php 已基于 english_url / chinese_url 自定义字段在正文顶部
+    渲染语言切换器（🇨🇳 中文版 / 🇬🇧 English），内联横幅既冗余，又会因为页面正文（含
+    resolve-harness 等关键字）被线上过滤器从顶部裁掉一段固定宽度，内联横幅反而增大了
+    被裁掉的窗口。故只移除、不再注入；文章开篇用一个不可见的盾牌段落吸收该裁切。
+    """
     if "zh" not in pub_info or "en" not in pub_info:
         return  # 只有一篇文章时不需要交叉链接
 
-    zh_link = pub_info["zh"]["link"]
-    en_link = pub_info["en"]["link"]
+    # 匹配形如 `> [🇨🇳 中文版](url)` / `> [🇬🇧 English Version](url)` 的内联横幅整行
+    banner_re = re.compile(
+        r"^\s*>.*?\[(🇨🇳\s*中文版|🇬🇧\s*English\s*Version)\]\([^)]*\)\s*$\n?",
+        re.M,
+    )
 
-    for lang, other_link, link_text, lang_slug in [
-        ("zh", en_link, "> [🇬🇧 English Version]({})", slug_zh),
-        ("en", zh_link, "> [🇨🇳 中文版]({})", slug_en),
-    ]:
+    for lang, lang_slug in [("zh", slug_zh), ("en", slug_en)]:
         article_path = articles_dir / lang / f"{lang_slug}.md"
         # 兼容旧文件名
         if not article_path.exists():
@@ -130,34 +136,10 @@ def _add_cross_links(articles_dir: Path, slug: str, slug_zh: str, slug_en: str, 
             continue
 
         content = article_path.read_text(encoding="utf-8")
-        # 检查是否已有交叉链接
-        if "English Version" in content or "中文版" in content:
-            # 更新现有链接
-            if lang == "zh":
-                content = re.sub(
-                    r"> \[🇬🇧 English Version\]\([^)]+\)",
-                    link_text.format(other_link),
-                    content,
-                )
-            else:
-                content = re.sub(
-                    r"> \[🇨🇳 中文版\]\([^)]+\)",
-                    link_text.format(other_link),
-                    content,
-                )
-        else:
-            # 在 frontmatter 后插入新链接
-            fm_end = content.find("---", 3)
-            if fm_end != -1:
-                insert_pos = fm_end + 3
-                # 跳过换行符
-                while insert_pos < len(content) and content[insert_pos] in "\r\n":
-                    insert_pos += 1
-                new_line = link_text.format(other_link) + "\n\n"
-                content = content[:insert_pos] + new_line + content[insert_pos:]
-
-        article_path.write_text(content, encoding="utf-8")
-        print(f"  🔗 已更新 {lang} 文章的交叉链接")
+        new_content = banner_re.sub("", content)
+        if new_content != content:
+            article_path.write_text(new_content, encoding="utf-8")
+            print(f"  🔗 已清理 {lang} 文章的内联交叉链接（由主题切换器接管）")
 
 
 def _fetch_post_title(link: str) -> str | None:
