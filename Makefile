@@ -1,4 +1,4 @@
-.PHONY: install lint clean articles articles-agnes articles-paid publish archive translate translate-agnes translate-paid
+.PHONY: install lint clean articles articles-agnes articles-paid publish archive translate translate-agnes translate-paid validate discover
 
 # 出网代理：统一从 .env 的 WP_PROXY 读取（换端口只改 .env 一处）。
 # 原先 shell 里是 7890 已失效，会导致发布/调外部 API 时 ECONNREFUSED 127.0.0.1:7890；
@@ -61,3 +61,9 @@ archive: ## 归档文章到 wordpress-tools，并重建 juejin/segmentfault/wech
 	fi
 	@echo "🧹 清理 $(P) 的源码镜像缓存"
 	@rm -rf tasks/project-articles/.src_cache/$(P) && echo "  已删除 .src_cache/$(P)/" || echo "  .src_cache/$(P)/ 不存在，跳过"
+
+validate: ## 发布前校验文章正确性 用法: make validate [P=rag-platform]
+	$(PY) tasks/project-articles/validate.py $(P)
+
+discover: ## 扫描大项目下有 github remote 的子项目，建议加入 projects.json 用法: make discover [FLAGS=--add]
+	$(PY) tasks/project-articles/discover_projects.py $(FLAGS)

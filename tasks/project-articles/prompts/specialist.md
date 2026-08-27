@@ -115,7 +115,14 @@ tags: ["相关标签"]
 description: "一句话 meta description（≤160 字，含核心关键词，概括本文差异化价值）"
 ---
 ```
-- **title 与 description 必须是面向读者的纯文本**，直接写结论式标题/摘要；**严禁把内部推理过程（如 `Thought:` / `最终 Answer:` / `内容大纲` / `关键发现` / `让我开始撰写正文` 等）写进 title 或 description**，也不要把"我已读取源码"这类独白当作值。一旦泄漏，会被核查闸判为污染并隔离待复核。
+- **title 与 description 必须是面向读者的纯文本**，直接写结论式标题/摘要；**严禁把内部推理过程（如 `Thought:` / `最终 Answer:` / `内容大纲` / `关键发现` / `让我开始撰写正文` / `我已读取源码` 等）写进 title 或 description**，也不要把"我已读取源码"这类独白当作值。**英文思考过程同样严禁**，例如 `I need to read the source code` / `Let me first` / `I will now` / `to ground my outline` / `First I need` 等。一旦泄漏，会被核查闸判为污染并隔离待复核。
+
+**title 写作规范：**
+- 必须是**名词短语或结论式标题**，不能是完整句子，不能包含第一人称（I/me/my/我）
+- 中文文章 title 必须用中文，英文文章 title 必须用英文
+- 长度 8-30 字，概括文章核心价值
+- ✅ 正面示例：`轻量级 RAG 中的混合检索实践`、`从零构建可观测的 Agent 运行时`
+- ❌ 反面示例：`I need to read the source code first`、`让我先读取源码再写`、`关于这个项目的一些思考`
 
 **重要格式规则：**
 - **categories** 必须为 `["AI"]`，不要用 "tech" 或其他值

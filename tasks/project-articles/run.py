@@ -903,6 +903,11 @@ _PLAN_MARKERS = [
 _REASONING_LEAK_MARKERS = (
     "Thought:", "最终 Answer:", "内容大纲", "让我开始撰写正文",
     "关键发现", "让我开始撰写", "下面开始撰写", "我已读取了", "我已经读取",
+    # 英文思考过程（免费模型常泄漏）
+    "I need to read", "I need to", "let me read", "I will read", "I'll read",
+    "to ground my", "first I", "I am going to", "I'm going to",
+    "let me start", "I will now", "I'll now", "now I need",
+    "I should read", "let me first", "I need to first",
 )
 # 整行删除：行内出现下列模式之一即整行移除（覆盖中英文 Thought / Answer / 大纲 / 关键发现）。
 _REASONING_LEAK_LINE_RE = re.compile(
@@ -916,8 +921,17 @@ _REASONING_LEAK_LINE_RE = re.compile(
     r"|我已?读取了足够多.*"
     r"|让我开始撰写.*"
     r"|下面开始撰写.*"
+    # 英文思考过程整行
+    r"|I need to (?:read|first|start|begin).*"
+    r"|Let me (?:read|start|begin|first).*"
+    r"|I will (?:read|start|begin|now).*"
+    r"|I'll (?:read|start|begin|now).*"
+    r"|First,? I (?:need|will|should|read).*"
+    r"|I am going to.*"
+    r"|I'm going to.*"
+    r"|Now I (?:need|will|should|read).*"
     r")\s*$",
-    re.MULTILINE,
+    re.MULTILINE | re.IGNORECASE,
 )
 
 
@@ -952,7 +966,12 @@ def _sanitize_frontmatter(article: str, desc_fallback: str = "") -> str:
         low = ln.strip()
         if low.startswith("title:"):
             val = ln.split(":", 1)[1].strip().strip('"').strip("'")
+            # 标记泄漏检测
             if any(mk in val for mk in _REASONING_LEAK_MARKERS):
+                cleaned.append(f"title: {desc_fallback or ''}")
+                continue
+            # 句子式标题检测：含第一人称 (I/me/my) 且长度 > 20 且像完整句子 → 视为思考过程泄漏
+            if re.search(r"\b(I|me|my|mine)\b", val, re.IGNORECASE) and len(val) > 20:
                 cleaned.append(f"title: {desc_fallback or ''}")
                 continue
         if low.startswith("description:"):

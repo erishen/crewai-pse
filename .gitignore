@@ -10,3 +10,4 @@ projects-excluded.json
 styles-history.json
 .src_cache/
 .pse_tmp/
+.serena
