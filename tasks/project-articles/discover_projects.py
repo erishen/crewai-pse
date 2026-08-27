@@ -2,7 +2,7 @@
 """扫描大项目下有 github remote 的子项目，建议加入 projects.json。
 
 功能：
-1. 递归扫描 individuular-invest 下的子目录，找有 .git 的项目
+1. 递归扫描 individular-invest 下的子目录，找有 .git 的项目
 2. 检查 git remote origin 是否指向 github.com
 3. 过滤掉 _archived、github（第三方克隆）、node_modules、.venv 等目录
 4. 对比已有 projects.json，找出新增项目
@@ -101,119 +101,183 @@ def read_file_safe(path: Path, max_bytes: int = 8000) -> str:
         return ""
 
 
+def _clean_md(line: str) -> str:
+    """去掉 markdown 链接/图片/强调/HTML 标记，返回纯文本。"""
+    line = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)  # 图片
+    line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)  # 链接 -> 文本
+    line = re.sub(r"[*_`]", "", line)
+    line = re.sub(r"<[^>]+>", "", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    return line
+
+
+def _is_noisy_line(line: str) -> bool:
+    """README 中不属于『描述段落』的行（标题/徽章/列表/表格/语言切换等）。"""
+    s = line.strip()
+    if not s:
+        return True
+    if s.startswith("#"):  # 标题
+        return True
+    if s.startswith("!"):  # 图片/徽章
+        return True
+    if s.startswith(">"):  # 引用块
+        return True
+    if s.startswith("|"):  # 表格
+        return True
+    if re.match(r"^[-*+]\s", s):  # 列表
+        return True
+    if "shields.io" in s or "img.shields" in s or "[![" in s:  # 状态徽章
+        return True
+    # 语言切换行：English | [中文]、Language:、语言:
+    if re.search(r"(english|中文|language|lang)", s, re.I) and ("|" in s or "[" in s or "README" in s) and len(s) < 80:
+        return True
+    return False
+
+
 def guess_desc(repo_dir: Path) -> str:
-    """从 README 或配置文件猜测项目描述。"""
-    # 1. README
+    """从 README 首段或 manifest 的 description 猜测项目描述（更丰富、去噪）。"""
+    # 1. README：取第一个『描述段落』（连续非噪声行合并，支持跨行描述）
     for name in ["README.md", "README.rst", "README.txt", "README"]:
         p = repo_dir / name
-        if p.exists():
-            text = read_file_safe(p)
-            # 取第一个非标题、非空、非HTML标签、非图片的行作为描述
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("#") or line.startswith("!"):
-                    continue
-                if line.startswith("<") or line.startswith(">"):
-                    continue
-                if line.startswith("[!") or line.startswith("!["):
-                    continue
-                if "中文" in line and "English" in line and len(line) < 20:
-                    continue
-                if len(line) < 10:
-                    continue
-                # 清理 markdown 标记
-                line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
-                line = re.sub(r"[*_`]", "", line)
-                line = re.sub(r"<[^>]+>", "", line)
-                if len(line.strip()) >= 10:
-                    return line.strip()[:120]
-            break
+        if not p.exists():
+            continue
+        text = read_file_safe(p, max_bytes=12000)
+        buf: list[str] = []
+        for raw in text.split("\n"):
+            line = raw.strip()
+            if _is_noisy_line(line):
+                if buf:
+                    break
+                continue
+            cleaned = _clean_md(line)
+            if len(cleaned) < 8:
+                if buf:
+                    break
+                continue
+            buf.append(cleaned)
+            if sum(len(x) for x in buf) > 200:  # 攒够约 200 字就停
+                break
+        if buf:
+            desc = " ".join(buf).strip()
+            # 按词边界截断，避免切断单词
+            if len(desc) > 220:
+                desc = desc[:220].rsplit(" ", 1)[0].rstrip(",.;: ") + "…"
+            return desc
+        break
 
-    # 2. package.json
-    pkg = repo_dir / "package.json"
-    if pkg.exists():
-        try:
-            data = json.loads(read_file_safe(pkg))
-            if data.get("description"):
-                return data["description"][:120]
-            if data.get("name"):
-                return f"{data['name']} 项目"
-        except Exception:
-            pass
-
-    # 3. pyproject.toml
-    pyproj = repo_dir / "pyproject.toml"
-    if pyproj.exists():
-        text = read_file_safe(pyproj)
-        m = re.search(r'description\s*=\s*"([^"]+)"', text)
-        if m:
-            return m.group(1)[:120]
+    # 2. manifest description（兜底，干净的单句）
+    for spec in [
+        ("package.json", r'"description"\s*:\s*"([^"]+)"'),
+        ("pyproject.toml", r'description\s*=\s*"([^"]+)"'),
+        ("Cargo.toml", r'description\s*=\s*"([^"]+)"'),
+        ("setup.py", r'description\s*=\s*"([^"]+)"'),
+    ]:
+        fp = repo_dir / spec[0]
+        if fp.exists():
+            m = re.search(spec[1], read_file_safe(fp))
+            if m and len(m.group(1)) >= 10:
+                return m.group(1)[:200]
 
     return repo_dir.name + " 项目"
 
 
 def guess_highlights(repo_dir: Path) -> str:
-    """从项目文件结构猜测技术亮点。"""
-    highlights = []
+    """从项目文件结构猜测技术亮点（覆盖面更广，永不出占位符）。"""
+    highlights: list[str] = []
+    files = {f.name for f in repo_dir.iterdir() if f.is_file()} if repo_dir.exists() else set()
+    dirs = {d.name for d in repo_dir.iterdir() if d.is_dir()} if repo_dir.exists() else set()
 
-    # 检查技术栈文件
-    files = {f.name.lower() for f in repo_dir.iterdir() if f.is_file()} if repo_dir.exists() else set()
-
-    if "package.json" in files:
-        highlights.append("Node.js")
-    if "pyproject.toml" in files or "setup.py" in files or "requirements.txt" in files:
-        highlights.append("Python")
-    if "pom.xml" in files or "build.gradle" in files:
-        highlights.append("Java")
-    if "go.mod" in files:
+    # ── 生态 / 语言 ──
+    if (repo_dir / "pnpm-workspace.yaml").exists() or (repo_dir / "lerna.json").exists():
+        highlights.append("pnpm monorepo")
+    if (repo_dir / "go.mod").exists():
         highlights.append("Go")
-    if "Cargo.toml" in files:
+    if (repo_dir / "Cargo.toml").exists():
         highlights.append("Rust")
-    if "docker-compose.yml" in files or "Dockerfile" in files:
-        highlights.append("Docker")
-    if "Makefile" in files:
-        highlights.append("Makefile 构建")
-
-    # 检查子目录
-    try:
-        dirs = {d.name.lower() for d in repo_dir.iterdir() if d.is_dir()}
-    except Exception:
-        dirs = set()
-
-    if "src" in dirs:
-        highlights.append("src/ 源码结构")
-    if "tests" in dirs or "test" in dirs:
-        highlights.append("测试覆盖")
-    if ".github" in dirs:
-        highlights.append("GitHub Actions CI")
-    if "docs" in dirs:
-        highlights.append("文档")
-
-    # 检查框架特征
-    pkg = repo_dir / "package.json"
-    if pkg.exists():
+        cargo = read_file_safe(repo_dir / "Cargo.toml")
+        if "ratatui" in cargo:
+            highlights.append("ratatui TUI")
+        if "tokio" in cargo:
+            highlights.append("异步(tokio)")
+    if (repo_dir / "package.json").exists():
+        if "pnpm-workspace.yaml" not in files:  # monorepo 已标注，避免重复
+            highlights.append("Node.js")
         try:
-            data = json.loads(read_file_safe(pkg))
+            data = json.loads(read_file_safe(repo_dir / "package.json"))
             deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-            if "react" in deps:
+            dl = {k.lower(): v for k, v in deps.items()}
+            if "react" in dl:
                 highlights.append("React")
-            if "next" in deps or "next" in str(deps):
+            if "next" in dl:
                 highlights.append("Next.js")
-            if "vue" in deps:
+            if "vue" in dl:
                 highlights.append("Vue")
-            if "typescript" in deps:
+            if "typescript" in dl:
                 highlights.append("TypeScript")
-            if "fastapi" in str(deps).lower():
-                highlights.append("FastAPI")
+            if "vite" in dl:
+                highlights.append("Vite")
+            if "tailwindcss" in dl:
+                highlights.append("Tailwind CSS")
+            if "express" in dl or "fastify" in dl or "koa" in dl:
+                highlights.append("Web 框架")
         except Exception:
             pass
+    if (repo_dir / "pyproject.toml").exists() or (repo_dir / "setup.py").exists() or (repo_dir / "requirements.txt").exists():
+        highlights.append("Python")
 
+    # ── Skills 仓库特征 ──
+    for spec in ["SKILL_SPEC.md", "SKILLSPEC.md"]:
+        if (repo_dir / spec).exists():
+            highlights.append("Skills 规范(SKILL_SPEC)")
+            break
+    if "skills" in dirs:
+        highlights.append("提示词包集合")
+    if "souls" in dirs:
+        highlights.append("PSE 角色(souls)")
+
+    # ── 基础设施 / DevOps ──
+    if (repo_dir / "Dockerfile").exists() or (repo_dir / "docker-compose.yml").exists():
+        highlights.append("Docker")
+    if (repo_dir / "Makefile").exists():
+        highlights.append("Make 构建")
+    if ".github" in dirs:
+        highlights.append("GitHub Actions CI")
+    if (repo_dir / "docker-compose.yml").exists():
+        highlights.append("容器编排")
+    if any(f.startswith("LICENSE") for f in files):
+        highlights.append("开源协议")
+
+    # ── 文档 / 测试 / 前端 ──
+    if "docs" in dirs:
+        highlights.append("文档")
+    if "tests" in dirs or "test" in dirs:
+        highlights.append("测试覆盖")
+    if "apps" in dirs or "web" in dirs or "frontend" in dirs:
+        highlights.append("前后端分离(web)")
+    if "README.zh.md" in files or "README.en.md" in files or "README.zh-CN.md" in files:
+        highlights.append("中英双语")
+
+    # ── 兜底：按根目录文件扩展名猜语言 ──
     if not highlights:
-        highlights.append("待补充技术亮点")
+        exts: dict[str, int] = {}
+        for f in repo_dir.iterdir():
+            if f.is_file():
+                exts[f.suffix] = exts.get(f.suffix, 0) + 1
+        if exts.get(".rs", 0) > 0:
+            highlights.append("Rust")
+        elif (exts.get(".ts", 0) + exts.get(".tsx", 0)) > 0:
+            highlights.append("TypeScript")
+        elif exts.get(".py", 0) > 0:
+            highlights.append("Python")
+        elif exts.get(".go", 0) > 0:
+            highlights.append("Go")
+        elif exts.get(".md", 0) > 0:
+            highlights.append("Markdown 内容")
+        else:
+            highlights.append("详见 README")
 
-    return " + ".join(highlights[:6])
+    # 去重并按出现顺序保留，最多 8 个
+    return " + ".join(list(dict.fromkeys(highlights))[:8])
 
 
 def scan_projects() -> list[dict]:
