@@ -1,14 +1,17 @@
-"""将 ARTICLES_DIR 中的文章归档到 wordpress-tools/articles/{zh,en}/。
+"""将 ARTICLES_DIR 中的文章归档到 wordpress-tools/articles/{zh,en}/，并重建各平台副本与关键词索引。
 
 用法:
     python archive.py <项目名>
 
-独立于发布流程，可在发布后按需手动执行。
+独立于发布流程，可在发布后按需手动执行。归档会把 pse/ 下的源文章搬入
+wordpress-tools/articles/，随后本地重建 juejin/segmentfault/wechat 副本并刷新
+关键词索引（仅本地构建，不调平台 API、不需要凭据）。
 """
 
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +35,50 @@ def _load_projects() -> dict:
         with open(PUBLISHED_FILE, encoding="utf-8") as f:
             published = json.load(f)
     return {**published, **pending}
+
+
+def rebuild_platform_copies(wp_tools_dir: Path, slug: str) -> None:
+    """归档后重建 juejin/segmentfault/wechat 副本并刷新关键词索引。
+
+    仅跑本地构建（不调平台 API、不需要凭据）：
+      - gen_keywords_index.py        刷新关键词索引
+      - build-juejin-from-zh.mjs      重建掘金副本
+      - build-segmentfault.mjs        重建思否副本
+      - wechat-convert.js             本地转微信 HTML 副本（不建草稿/不发布）
+    任一步失败仅告警，不中断整体归档。
+    """
+    local_steps = [
+        (["python3", "tools/gen_keywords_index.py"], "关键词索引"),
+        (["node", "src/publish/build-juejin-from-zh.mjs"], "掘金副本"),
+        (["node", "src/publish/build-segmentfault.mjs"], "思否副本"),
+    ]
+    for cmd, label in local_steps:
+        try:
+            r = subprocess.run(cmd, cwd=wp_tools_dir, capture_output=True, text=True, timeout=300)
+            if r.returncode == 0:
+                print(f"  ✅ {label} 重建完成")
+            else:
+                print(f"  ⚠️ {label} 重建失败(exit {r.returncode}):\n{r.stderr[-2000:]}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️ {label} 重建异常: {e}")
+
+    # 微信 HTML 副本（本地转换，不调 API/不建草稿）。
+    # 微信公众号仅中文，故只转 zh 源；en 源不建微信副本。
+    src = wp_tools_dir / "articles" / "zh" / f"{slug}-zh.md"
+    if src.exists():
+        try:
+            r = subprocess.run(
+                ["node", "src/wechat/wechat-convert.js", f"articles/zh/{slug}-zh.md"],
+                cwd=wp_tools_dir, capture_output=True, text=True, timeout=300,
+            )
+            if r.returncode == 0:
+                print("  ✅ 微信副本重建完成（仅 zh）")
+            else:
+                print(f"  ⚠️ 微信副本重建失败:\n{r.stderr[-1500:]}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️ 微信副本重建异常: {e}")
+    else:
+        print("  ⏭️ 微信副本跳过（无 zh 源）")
 
 
 def main():
@@ -80,6 +127,12 @@ def main():
         shutil.move(src, dest)
         print(f"  📁 {lang} 已归档（移走）→ {dest}")
         archived += 1
+
+    if archived > 0 and WP_TOOLS_DIR and WP_TOOLS_DIR.exists():
+        print("\n🔄 重建各平台副本 + 关键词索引...")
+        rebuild_platform_copies(WP_TOOLS_DIR, slug)
+    elif archived == 0:
+        print("\n⚠️ 没有文件被归档，跳过副本重建")
 
     print(f"\n📊 归档完成: {archived} 篇（pse/ 目录结构保留，文件已移走）")
 
