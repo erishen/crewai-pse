@@ -26,6 +26,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent.parent  # crewai-pse 根
 PROJECTS_FILE = BASE / "projects.json"
+PUBLISHED_FILE = BASE / "projects-published.json"
 
 # 文章输出目录（与 run.py 保持一致）
 ARTICLES_DIR = ROOT.parent.parent / "personal" / "personal-site" / "wordpress-tools" / "articles" / "pse"
@@ -274,13 +275,16 @@ def main():
 
     project_key = sys.argv[1]
 
-    # 验证项目是否在 projects.json 中
-    if PROJECTS_FILE.exists():
-        projects = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
-        if project_key not in projects:
-            print(f"❌ 未知项目: {project_key}")
-            print(f"可用项目: {', '.join(sorted(projects.keys()))}")
-            sys.exit(2)
+    # 验证项目是否在 projects.json（待写队列）或 projects-published.json（已发存档）中。
+    # 已发布项目可重新校验/重新发布（publish.py 同样认两个文件）。
+    known: set[str] = set()
+    for path in (PROJECTS_FILE, PUBLISHED_FILE):
+        if path.exists():
+            known |= set(json.loads(path.read_text(encoding="utf-8")).keys())
+    if project_key not in known:
+        print(f"❌ 未知项目: {project_key}")
+        print(f"可用项目: {', '.join(sorted(known))}")
+        sys.exit(2)
 
     result = validate_project(project_key)
     sys.exit(0 if result.passed else 1)
