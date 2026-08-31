@@ -82,11 +82,26 @@ def find_zh_readme(d):
 
 
 def replace_section(text, heading, block):
-    """Replace an existing `heading` section (up to next \n## or EOF) with `block`."""
-    pat = re.compile(re.escape(heading) + r".*?(?=\n## |\Z)", re.S)
-    if pat.search(text):
-        return pat.sub(block.rstrip("\n") + "\n", text)
-    return None  # not present
+    """Replace the `heading` section (heading line + its following blank/'- ' list
+    lines) with `block`, preserving any other trailing content in the section.
+
+    Bugs fixed vs. old greedy pattern (`heading.*?(?=\\n## |\\Z)`):
+    - now anchored at line start with (?!#) so '### Related Articles' (a level-3
+      subsection, e.g. under '## Articles & Resources') is NOT matched;
+    - only consumes blank lines and list items right after the heading, so things
+      like a '<div align=center>🇨🇳 中文文档</div>' nav line at the section end
+      survive the rewrite.
+    Returns None when the section is absent.
+    """
+    m = re.search(r"^" + re.escape(heading) + r"(?!#)[^\n]*\n", text, re.M)
+    if not m:
+        return None
+    tail = re.compile(r"(?:[ \t]*\n|- [^\n]*\n)*").match(text, m.end())
+    end = tail.end()
+    rest = text[end:]
+    # 章节后仍有内容时补一个空行分隔；位于文件末尾则不加，保证 re-run 幂等
+    glue = "\n" if rest.strip() else ""
+    return text[: m.start()] + block + glue + rest
 
 
 def insert_section(text, block):
@@ -109,6 +124,26 @@ def make_block(heading, items, titles):
     return "\n".join(lines) + "\n"
 
 
+def sync_file(path, heading, items, titles, dry, changed):
+    """Sync one README: replace its article section, or insert if absent.
+
+    Skip insertion when the links already appear elsewhere in the file (e.g. a
+    hand-maintained subsection like '### Related Articles' under a resources
+    section) — re-inserting would duplicate the same links.
+    """
+    block = make_block(heading, items, titles)
+    txt = open(path, encoding="utf-8").read()
+    new = replace_section(txt, heading, block)
+    if new is None:
+        if all(link in txt for _, link in items):
+            return
+        new = insert_section(txt, block)
+    if new != txt:
+        if not dry:
+            open(path, "w", encoding="utf-8").write(new)
+        changed.append(path)
+
+
 def process(dry):
     pub = load_published()
     titles = build_title_map()
@@ -120,30 +155,12 @@ def process(dry):
         if not os.path.isdir(d):
             print(f"[SKIP] {sd}: local dir not found")
             continue
-        # EN
         en_path = os.path.join(d, "README.md")
         if os.path.isfile(en_path) and g["en"]:
-            block = make_block(EN_HEADING, g["en"], titles)
-            txt = open(en_path, encoding="utf-8").read()
-            new = replace_section(txt, EN_HEADING, block)
-            if new is None:
-                new = insert_section(txt, block)
-            if new != txt:
-                if not dry:
-                    open(en_path, "w", encoding="utf-8").write(new)
-                changed.append(en_path)
-        # ZH
+            sync_file(en_path, EN_HEADING, g["en"], titles, dry, changed)
         zh_path = find_zh_readme(d)
         if zh_path and g["zh"]:
-            block = make_block(ZH_HEADING, g["zh"], titles)
-            txt = open(zh_path, encoding="utf-8").read()
-            new = replace_section(txt, ZH_HEADING, block)
-            if new is None:
-                new = insert_section(txt, block)
-            if new != txt:
-                if not dry:
-                    open(zh_path, "w", encoding="utf-8").write(new)
-                changed.append(zh_path)
+            sync_file(zh_path, ZH_HEADING, g["zh"], titles, dry, changed)
 
     if dry:
         print(f"[DRY] would change {len(changed)} file(s)")
