@@ -1,4 +1,4 @@
-.PHONY: install lint clean articles articles-agnes articles-paid publish archive translate translate-agnes translate-paid validate discover
+.PHONY: install lint test clean articles articles-agnes articles-paid publish archive translate translate-agnes translate-paid validate discover sync-links check-links
 
 # 出网代理：统一从 .env 的 WP_PROXY 读取（换端口只改 .env 一处）。
 # 原先 shell 里是 7890 已失效，会导致发布/调外部 API 时 ECONNREFUSED 127.0.0.1:7890；
@@ -20,6 +20,9 @@ install:
 
 lint:
 	uv run ruff check src/ tasks/
+
+test: ## 运行 pipeline/ 单元测试（tasks/project-articles）
+	cd tasks/project-articles && $(PY) -m pytest -q
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
@@ -67,3 +70,15 @@ validate: ## 发布前校验文章正确性 用法: make validate [P=rag-platfor
 
 discover: ## 扫描大项目下有 github remote 的子项目，建议加入 projects.json 用法: make discover [FLAGS=--add]
 	$(PY) tasks/project-articles/discover_projects.py $(FLAGS)
+
+# README 文章回链：projects-published.json 是唯一真相源。
+# sync 写入各项目本地 README（幂等），check 只读校验（exit!=0 可直接挂 CI/pre-commit）。
+# 发布流水线的最后一步应是 make check-links。
+# 用 python3 而非 $(PY)/uv run：两脚本纯 stdlib 零依赖；uv 启动会探测写
+# ~/.cache/uv，在 resolve-studio harness 的 Seatbelt 沙箱（仅可写 cwd+tmp）
+# 下被拒，且 uv 冷启动可能撞 shell 工具 15s 超时。
+sync-links: ## 同步 erishen.cn 文章回链到各项目 README 用法: make sync-links [FLAGS=--dry]
+	python3 tasks/project-articles/sync_readme_backlinks.py $(FLAGS)
+
+check-links: ## 只读校验各项目 README 回链完整性（29 项全绿才 exit 0）
+	python3 tasks/project-articles/check_readme_links.py
