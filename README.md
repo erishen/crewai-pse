@@ -172,8 +172,8 @@ cp .env.example .env
 | `ARTICLES_DIR` | ✅ | Output directory for generated articles (`{zh,en}/`) |
 | `WP_TOOLS_DIR` | ✅ | Path to the `wordpress-tools` directory (for publishing/archiving) |
 | `PSE_MAX_RETRIES` | | Max verification retry rounds (default: `3`) |
-| `AGNES_KEY` | | Alternative: Agnes API key (free model) |
-| `AGNES_BASE_URL` | | Alternative: Agnes base URL |
+| `FREE_KEY` | | Alternative: free gateway API key |
+| `FREE_BASE_URL` | | Alternative: free gateway base URL |
 | `WP_API_URL` | ✅* | WordPress REST API base, e.g. `https://your-site.com/wp-json/wp/v2` |
 | `WP_USERNAME` | ✅* | WordPress username (for the links page via Basic Auth) |
 | `WP_APP_PASSWORD` | ✅* | WordPress application password |
@@ -216,9 +216,9 @@ cp tasks/project-articles/projects.json.example tasks/project-articles/projects.
 ```bash
 # Step 1 — Write (uses DEFAULT_PROJECT from .env if P= omitted)
 make articles P=my-project
-make articles-agnes P=my-project         # use the free Agnes model
+make articles-free P=my-project         # use the free `free` model
 make translate P=my-project              # translate existing ZH → EN only
-make translate-agnes P=my-project
+make translate-free P=my-project
 
 # Step 2 — Publish (separate step)
 make publish P=my-project                 # to production

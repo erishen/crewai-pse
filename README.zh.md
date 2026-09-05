@@ -171,8 +171,8 @@ cp .env.example .env
 | `ARTICLES_DIR` | ✅ | 生成文章的输出目录（`{zh,en}/`） |
 | `WP_TOOLS_DIR` | ✅ | `wordpress-tools` 目录路径（用于发布/归档） |
 | `PSE_MAX_RETRIES` | | 核查修正最大重试次数（默认 `3`） |
-| `AGNES_KEY` | | 备选：Agnes 免费模型 API Key |
-| `AGNES_BASE_URL` | | 备选：Agnes 免费模型 API 地址 |
+| `FREE_KEY` | | 备选：free 网关 API Key |
+| `FREE_BASE_URL` | | 备选：free 网关 API 地址 |
 | `WP_API_URL` | ✅* | WordPress REST API 地址，如 `https://your-site.com/wp-json/wp/v2` |
 | `WP_USERNAME` | ✅* | WordPress 用户名（用于链接页 Basic Auth） |
 | `WP_APP_PASSWORD` | ✅* | WordPress 应用密码 |
@@ -212,9 +212,9 @@ cp tasks/project-articles/projects.json.example tasks/project-articles/projects.
 ```bash
 # 步骤 1 — 写（省略 P= 则使用 .env 中的 DEFAULT_PROJECT）
 make articles P=my-project
-make articles-agnes P=my-project         # 改用免费的 Agnes 模型
+make articles-free P=my-project         # 改用免费的 free 网关
 make translate P=my-project              # 仅把已有的中文文章翻译成英文
-make translate-agnes P=my-project
+make translate-free P=my-project
 
 # 步骤 2 — 发布（独立步骤）
 make publish P=my-project                 # 发布到线上

@@ -20,7 +20,7 @@ from .tools import read_file, run_bash
 class RetryLLM(LLM):
     """给 CrewAI LLM 调用包一层指数退避重试。
 
-    第三方网关（Agnes / DeepSeek）偶发故障：404（FastAPI 的 {"detail":"Not Found"}）、
+    第三方网关（免费网关 / DeepSeek）偶发故障：404（FastAPI 的 {"detail":"Not Found"}）、
     503、以及连接层 ConnectionResetError（"Connection reset by peer"）。这类瞬时故障
     重试即可恢复。默认 6 次、退避 2/4/8/16/32s，覆盖所有 Agent 的 LLM 调用。
     """

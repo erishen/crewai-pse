@@ -272,7 +272,7 @@ def _check_env_vars(article: str, source_dir: Path):
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             real_vars.add(line.split("=", 1)[0].strip())
-    # 也提取注释里的变量（如 # AGNES_KEY=...）
+    # 也提取注释里的变量（如 # FREE_KEY=...）
     for line in env_example.read_text(encoding="utf-8").splitlines():
         m = re.match(r"#\s*(\w+)=", line)
         if m:
@@ -284,7 +284,7 @@ def _check_env_vars(article: str, source_dir: Path):
         article_vars.add(m.group(1))
     for m in re.finditer(r"^(\w+)=\S+", article, re.MULTILINE):
         var = m.group(1)
-        if var.isupper() or var.startswith(("OPENAI_", "AGNES_", "PSE_", "CRM_")):
+        if var.isupper() or var.startswith(("OPENAI_", "FREE_", "PSE_", "CRM_")):
             article_vars.add(var)
     verified, fictitious = [], []
     for var in sorted(article_vars):
