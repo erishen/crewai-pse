@@ -138,7 +138,13 @@ def parse_batches(outline: str, source_dir: Path) -> list[dict]:
 
 
 def load_projects() -> dict:
-    """加载待写队列（projects.json）与已发布清单（projects-published.json）合并后的项目表。"""
+    """加载待写队列（projects.json）与已发布清单（projects-published.json）合并后的项目表。
+
+    只要求每个条目都有描述（desc）——那是所有条目（源码项目、方法论文章等）共有的。
+    源码字段（repo / highlights / source_dir）只对**真正要生成的文章项目**有意义，
+    由 run.py 在选定项目后校验，绝不能在这里对整个合并表硬校验：已发布清单里完全
+    可能有纯方法论 / 无源码的条目（如 vibecoding），把源码字段放这里会拖垮所有请求。
+    """
     pending = {}
     if PROJECTS_FILE.exists():
         with open(PROJECTS_FILE, encoding="utf-8") as f:
@@ -154,11 +160,9 @@ def load_projects() -> dict:
         print("请从 projects.json.example 复制并填写实际配置")
         sys.exit(1)
 
-    # schema 校验
-    required_keys = {"repo", "desc", "highlights", "source_dir"}
+    # desc 是所有条目共有的最小编码投影；缺了它连标题/提纲都无从生成。
     for name, cfg in projects.items():
-        missing = required_keys - set(cfg.keys())
-        if missing:
-            print(f"❌ [{name}] 缺少字段: {', '.join(missing)}")
+        if not isinstance(cfg, dict) or not str(cfg.get("desc", "")).strip():
+            print(f"❌ [{name}] 缺少 desc（描述）字段")
             sys.exit(1)
     return projects

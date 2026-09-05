@@ -601,6 +601,16 @@ def main():
     project_key, do_publish, do_translate_only, style_override = parse_args(projects)
     p = projects[project_key]
 
+    # 源码字段只对「要生成文章的源码项目」是必需的——纯方法论 / 无源码条目
+    # （如已发布清单里的 vibecoding）在 load_projects 的合并表里不参与生成，
+    # 只在这里对**选定的项目**校验，给出针对该项目、可操作的报错。
+    for field, label in (("repo", "repo"), ("highlights", "highlights"), ("source_dir", "source_dir")):
+        if field not in p or not str(p.get(field, "")).strip():
+            print(f"❌ [{project_key}] 缺少字段: {field}")
+            print(f"请检查 projects.json 中 {project_key} 的 {label} 是否已填写；")
+            print("若这是纯方法论 / 无源码类条目（没有 repo/source_dir），它本就不该出现在待写生成流程里。")
+            sys.exit(1)
+
     source_dir = ROOT / p["source_dir"]
     if not source_dir.exists():
         print(f"❌ 源码目录不存在: {source_dir}")
