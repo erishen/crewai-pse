@@ -53,6 +53,32 @@ JS_TS_KEYWORDS = {
 
 BUILTIN_KEYWORDS = PYTHON_KEYWORDS | JS_TS_KEYWORDS
 
+# Java/Kotlin/Go/Rust/C 关键字与内置类型——不应作为项目代码引用检查。
+# 许多 Java 类只是语言/框架内置类型（String/List/Map/Exception...），
+# 把它们当作「项目符号」会误报大量虚构引用，故一律跳过。
+JAVA_BUILTIN_TYPES = {
+    "String", "Integer", "Long", "Double", "Float", "Boolean", "Character", "Byte",
+    "Short", "Object", "Class", "Void", "Exception", "RuntimeException", "Error",
+    "Throwable", "List", "ArrayList", "LinkedList", "Map", "HashMap", "LinkedHashMap",
+    "Set", "HashSet", "TreeSet", "Optional", "Iterable", "Iterator", "Collection",
+    "Array", "StringBuilder", "StringBuffer", "Runnable", "Thread", "ProcessBuilder",
+    "Future", "CompletableFuture", "Path", "Paths", "File", "Files", "InputStream",
+    "OutputStream", "ByteArrayOutputStream", "BufferedReader", "PrintStream",
+    "System", "Math", "Arrays", "Collections", "UUID", "Date", "TimeUnit",
+    "ConcurrentHashMap", "Logger", "LoggerFactory", "Servlet", "JsonNode", "JsonParser",
+}
+JAVA_KEYWORDS = {
+    "public", "private", "protected", "static", "final", "void", "class", "interface",
+    "record", "enum", "extends", "implements", "return", "new", "this", "super",
+    "if", "else", "for", "while", "do", "switch", "case", "default", "break",
+    "continue", "try", "catch", "finally", "throw", "throws", "import", "package",
+    "true", "false", "null", "instanceof", "abstract", "synchronized", "volatile",
+    "transient", "native", "strictfp", "assert", "var", "yield", "sealed", "permits",
+    "requireNonNull", "override", "fmt", "println", "printStackTrace",
+}
+
+BUILTIN_KEYWORDS |= JAVA_BUILTIN_TYPES | JAVA_KEYWORDS
+
 # 疑似编造的基准/实验指标：先挑出「宣称 + 数值」的句式，再挑游离的精确量词
 _CLAIM_RE = re.compile(
     r"(实测|实验数据|真实实验|基准(?:测试|结果)?|压测|测量|跑分)[^。\n]{0,40}?"
@@ -73,8 +99,11 @@ _LEGIT_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
-_SCAN_EXTS = ("*.py", "*.md", "*.ts", "*.tsx", "*.js", "*.jsx")
-_SKIP_DIRS = (".venv", "__pycache__", "node_modules", ".src_cache")
+_SCAN_EXTS = (
+    "*.py", "*.md", "*.ts", "*.tsx", "*.js", "*.jsx",
+    "*.java", "*.kt", "*.go", "*.rs", "*.c", "*.h", "*.cpp", "*.cc",
+)
+_SKIP_DIRS = (".venv", "__pycache__", "node_modules", ".src_cache", "target", "build", ".gradle")
 
 
 def _iter_source_files(source_dir: Path, exts=_SCAN_EXTS):
@@ -93,10 +122,12 @@ def _extract_refs(article: str) -> set[str]:
     """
     refs = set(re.findall(r"`([A-Za-z_][\w._]*(?:/[A-Za-z_][\w._]*)*)`", article))
     # 代码块内提取：def/class 定义、import 目标、函数调用（snake_case 或 CamelCase）
-    # 支持 Python 和 JS/TS 代码块
-    for block in re.finditer(r"```(?:python|typescript|ts|javascript|js|tsx|jsx)?\s*\n(.*?)```", article, re.DOTALL):
+    # 支持 Python / JS/TS / Java 代码块
+    for block in re.finditer(
+            r"```(?:python|typescript|ts|javascript|js|tsx|jsx|java|kotlin|kt)?\s*\n(.*?)```",
+            article, re.DOTALL):
         for line in block.group(1).split("\n"):
-            # def/class 定义
+            # def/class 定义 + import ...
             m = re.match(r"^\s*(?:def|class)\s+(\w+)", line)
             if m:
                 refs.add(m.group(1))
@@ -117,6 +148,30 @@ def _extract_refs(article: str) -> set[str]:
                     if part:
                         refs.add(part.split(" as ")[0].strip())
                 continue
+            # Java 类/接口/record 声明、方法调用、static final 常量
+            m = re.match(
+                r"^\s*(?:public\s+|private\s+|protected\s+)?"
+                r"(?:abstract\s+|static\s+|final\s+)*"
+                r"(?:class|interface|record|enum)\s+([A-Za-z_]\w*)",
+                line,
+            )
+            if m:
+                refs.add(m.group(1))
+                continue
+            m = re.match(
+                r"^\s*(?:public\s+|private\s+|protected\s+)?"
+                r"static\s+final\s+[A-Za-z_][\w.<>\[\]]*\s+([A-Z][A-Z0-9_]*)",
+                line,
+            )
+            if m:
+                refs.add(m.group(1))
+                continue
+            # Java 方法声明/调用：classCamelCase 或 snake_case 后跟 (
+            for cm in re.finditer(r"\b([a-z][A-Za-z0-9]*|[\w]+_\w+)|\b([A-Z][A-Za-z0-9]+)\s*\(", line):
+                if cm.group(1):
+                    refs.add(cm.group(1))
+                elif cm.group(2):
+                    refs.add(cm.group(2))
             # 函数调用：snake_case 或 CamelCase，长度>=3（排除 print/len 等无下划线小写词）
             for cm in re.finditer(r"\b([a-z]+(?:_[a-z0-9]+)+|[A-Z][a-zA-Z0-9]+)\s*\(", line):
                 name = cm.group(1)
@@ -159,8 +214,9 @@ def _check_code_refs(refs: set[str], source_dir: Path):
             continue
         if ref in BUILTIN_KEYWORDS:
             continue
-        # 文件路径 → 递归搜磁盘（搜 .py/.md/.ts/.tsx/.js/.jsx 文件）
-        if "/" in ref or ref.endswith((".py", ".md", ".ts", ".tsx", ".js", ".jsx")):
+        # 文件路径 → 递归搜磁盘
+        if "/" in ref or ref.endswith((".py", ".md", ".ts", ".tsx", ".js", ".jsx",
+                                      ".java", ".kt", ".go", ".rs", ".c", ".h", ".cpp", ".cc")):
             found = any(
                 f.name == ref.rsplit("/", 1)[-1]
                 for ext in _SCAN_EXTS
@@ -171,7 +227,7 @@ def _check_code_refs(refs: set[str], source_dir: Path):
             else:
                 fictitious.append(ref)
             continue
-        # 类名/函数名 → grep（排除注释行，搜 .py/.md/.ts/.tsx/.js/.jsx 文件）
+        # 类名/函数名 → grep（排除注释行，搜全部扫描语言文件）
         found = False
         for f in _iter_source_files(source_dir):
             try:
@@ -349,10 +405,13 @@ def verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str]
 def extract_real_symbols(source_dir: Path) -> set[str]:
     """从真实源码提取符号表（函数/类名、文件名、全大写常量），供 grounding 比对与 Writer 白名单。
 
-    程序化提取，不依赖模型：扫描 .py/.ts/.tsx/.js 文件的 def/class 定义、
-    文件名（不含扩展名）、全大写常量赋值。返回小写化集合便于比对。
+    程序化提取，不依赖模型：扫描 .py/.ts/.tsx/.js/.java/.kt 等文件的
+    def/class/interface/record/方法定义、文件名（不含扩展名）、全大写常量赋值。
+    返回小写化集合便于比对。Java 符号单独提取，避免与内置类型混入。
     """
     symbols: set[str] = set()
+    java_symbols = _extract_java_symbols(source_dir)
+    symbols |= java_symbols
     for f in _iter_source_files(source_dir):
         symbols.add(f.stem.lower())
         try:
@@ -381,18 +440,66 @@ def extract_real_symbols(source_dir: Path) -> set[str]:
             if m:
                 symbols.add(m.group(1).lower())
                 continue
-            # JS/TS: function name( / async function name(
+            # JS/TS 代码后续符号已由 Java 等其他语言覆盖；此处仍保留 JS/TS 提取
             m = re.match(r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)", line)
             if m:
                 symbols.add(m.group(1).lower())
                 continue
-            # JS/TS: const/let/var name =
             m = re.match(r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)", line)
             if m:
                 symbols.add(m.group(1).lower())
                 continue
-            # JS/TS: class Name / interface Name
             m = re.match(r"^\s*(?:export\s+)?(?:default\s+)?(?:class|interface)\s+(\w+)", line)
             if m:
+                symbols.add(m.group(1).lower())
+    return symbols
+
+
+def _extract_java_symbols(source_dir: Path) -> set[str]:
+    """扫描 .java/.kt 文件，提取类/接口/record 名、类型名、static final 常量名。
+
+    与 `extract_real_symbols` 分开，因为 Java 的类声明语法与 Python/JS 差异大，
+    且 Java 代码引用核查（_check_code_refs）需要单独处理（方法调用以 `(` 结尾、
+    类名是 PascalCase、常量是 UPPER_SNAKE_CASE）。
+    """
+    symbols: set[str] = set()
+    for f in _iter_source_files(source_dir, ("*.java", "*.kt")):
+        symbols.add(f.stem.lower())
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for line in text.split("\n"):
+            stripped = line.strip()
+            # 跳过注释、import、package
+            if stripped.startswith(("//", "/*", "*", "import", "package", "@")):
+                continue
+            # public/private/protected class|interface|record|enum Name
+            m = re.match(
+                r"^\s*(?:public\s+|private\s+|protected\s+)?"
+                r"(?:abstract\s+|static\s+|final\s+)*"
+                r"(?:class|interface|record|enum)\s+([A-Za-z_]\w*)",
+                line,
+            )
+            if m:
+                symbols.add(m.group(1).lower())
+                continue
+            # public static final TYPE NAME = ;
+            m = re.match(
+                r"^\s*(?:public\s+|private\s+|protected\s+)?"
+                r"static\s+final\s+[A-Za-z_][\w.<>\[\]]*\s+([A-Z][A-Z0-9_]*)",
+                line,
+            )
+            if m:
+                symbols.add(m.group(1).lower())
+                continue
+            # 方法声明:  public RETURN_TYPE methodName(args) {  或  public RETURN_TYPE methodName();
+            m = re.match(
+                r"^\s*(?:public\s+|private\s+|protected\s+)?"
+                r"(?:static\s+|final\s+|default\s+|synchronized\s+)*"
+                r"[A-Za-z_][\w.<>\[\],\s]*\s+([a-z][\w]*)\s*\(",
+                line,
+            )
+            if m and not m.group(1).lower().startswith(("if", "for", "while", "switch", "return", "new", "catch")):
                 symbols.add(m.group(1).lower())
     return symbols
