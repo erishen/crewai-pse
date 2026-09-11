@@ -116,13 +116,23 @@ class RunContext:
         self.completion_tokens += completion
 
 
-def quarantine(article: str, slug_zh: str) -> None:
-    """把不合格文章隔离到 needs-review/ 目录（绝不翻译、绝不发布）。"""
+def quarantine(article: str, slug_zh: str, reason: str = "") -> None:
+    """把不合格文章隔离到 needs-review/ 目录（绝不翻译、绝不发布）。
+
+    reason 会另存为同名的 .reason.txt（正文本身一字不动），复核时一眼能看出
+    被隔离的原因；不传则只隔离。所有调用方都应传原因——隔离是失败路径，
+    没有原因的隔离稿等于让人重跑一遍才知道发生了什么。
+    """
     nr_dir = ARTICLES_DIR / "needs-review"
     nr_dir.mkdir(parents=True, exist_ok=True)
     nr_path = nr_dir / f"{slug_zh}.md"
     nr_path.write_text(article, encoding="utf-8")
     print(f"   已保存待复核 → {nr_path}")
+    if reason:
+        reason_text = reason.strip()
+        reason_path = nr_dir / f"{slug_zh}.reason.txt"
+        reason_path.write_text(reason_text + "\n", encoding="utf-8")
+        print(f"   隔离原因 → {reason_path.name}: {reason_text}")
 
 
 def parse_args(projects: dict):
@@ -480,7 +490,7 @@ def phase3_verify(ctx: RunContext, article: str) -> str | None:
             if code_refs:
                 print(f"\n❌ 程序化修正后仍残留 {len(code_refs)} 项虚构引用: {', '.join(code_refs)}")
                 print("   文章不可发布。已隔离至 needs-review 目录，请检查 grounding 约束或源码。")
-                quarantine(article, ctx.slug_zh, "")
+                quarantine(article, ctx.slug_zh, f"程序化修正后仍残留 {len(code_refs)} 项虚构代码引用: {', '.join(code_refs)}")
                 return None
             print(f"  ✅ 程序化修正完成，虚构引用已清除（验证通过 {len(verified)} 项），骨架结构完好")
             break
@@ -520,7 +530,7 @@ def phase3_verify(ctx: RunContext, article: str) -> str | None:
                 # ❌ 信任闸门：残留虚构内容 → 隔离，绝不发布/翻译
                 print(f"\n❌ 核查未通过：仍残留 {len(code_refs)} 项虚构代码引用: {', '.join(code_refs)}")
                 print("   文章不可发布。已隔离至 needs-review 目录，请检查 grounding 约束或源码。")
-                quarantine(article, ctx.slug_zh, "")
+                quarantine(article, ctx.slug_zh, f"核查未通过，仍残留 {len(code_refs)} 项虚构代码引用: {', '.join(code_refs)}")
                 return None
             print(f"  ✅ 程序化兜底清理完成，虚构引用已清除（验证通过 {len(verified)} 项）")
     return article
@@ -554,7 +564,7 @@ def phase4_finalize(ctx: RunContext, article: str) -> str:
     if zh_faq_count == 0:
         print("\n❌ 核查未通过：文章缺少 [faq] 区块（自动生成也失败）")
         print("   文章不可发布。已隔离至 needs-review 目录，请手工补 4-6 条 FAQ 或重新生成。")
-        quarantine(article, ctx.slug_zh, "")
+        quarantine(article, ctx.slug_zh, "缺少 [faq] 区块，自动生成 FAQ 也失败")
         raise SystemExit(1)
     if zh_faq_count < 4:
         print(f"⚠️ FAQ 仅 {zh_faq_count} 条（建议 4-6 条）")
@@ -682,14 +692,14 @@ def main():
     # 此时绝不保存中文、绝不翻译（翻译拿到垃圾会凭空编造），直接隔离待复核。
     if not is_valid_article(article):
         print("❌ 文章未通过有效性闸门（疑似非文章/过短/跑题），隔离待复核，不翻译")
-        quarantine(article, ctx.slug_zh, "")
+        quarantine(article, ctx.slug_zh, "未通过有效性闸门（疑似非文章/过短/跑题）")
         return
 
     # 思维链泄漏硬闸：任何风格都不允许内部推理独白进入成品。
     # 直接隔离待复核，绝不翻译/发布（避免把泄漏文本送入翻译 Agent 二次污染）。
     if has_reasoning_leak(article):
         print("❌ 检测到思维链/内部独白泄漏（Thought:/Answer:/内容大纲 等），隔离待复核，不翻译不发布")
-        quarantine(article, ctx.slug_zh, "")
+        quarantine(article, ctx.slug_zh, "检测到思维链/内部独白泄漏（Thought:/Answer:/内容大纲 等）")
         return
 
     print(f"📊 CrewAI 主体: {ctx.prompt_tokens} 输入 + {ctx.completion_tokens} 输出")
