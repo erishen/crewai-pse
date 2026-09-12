@@ -48,7 +48,7 @@ translate translate-free: ## 仅翻译已有中文文章（默认 free 免费）
 translate-paid: ## 仅翻译（付费 deepseek，质量优先）用法: make translate-paid [P=...]
 	$(PY) tasks/project-articles/run.py $(P) --translate
 
-publish: ## 发布文章到线上 用法: make publish [P=llamaindex-pse]
+publish: validate ## 发布文章到线上（自动先校验，校验通过后发布）用法: make publish [P=llamaindex-pse]
 	$(PY) tasks/project-articles/publish.py $(P) $(FLAGS)
 
 archive: ## 归档文章到 wordpress-tools，并重建 juejin/segmentfault/wechat 副本 + 关键词索引 用法: make archive [P=rag-task-service]
