@@ -1,12 +1,16 @@
 """将 ARTICLES_DIR 中生成的文章发布到 WordPress。
 
 用法:
-    python publish.py <项目名> [--local]
+    python publish.py <项目名> [--local] [--yes]
 
 默认发布到线上（--prod），加 --local 发布到本地环境。
 通过 subprocess 调用发布工具的 writeArticle.js 完成发布。
 发布成功后自动将文章链接和 wp_id 回写到 projects.json。
 发布工具路径通过 WP_TOOLS_DIR 环境变量配置。
+
+⚠️ 发布前确认门：不带 --yes 时，发布前会打印预览并要求人工输入 y 确认；
+非交互环境（无 stdin）未确认即取消，不会发出任何内容。--yes 表示已确认
+（供显式授权/自动化使用），等价于人工确认。
 """
 
 import json
@@ -351,7 +355,7 @@ def main():
     pending = _load_pending()
     published = _load_published()
     if not args or (args[0] not in pending and args[0] not in published):
-        print("用法: python publish.py <项目名> [--local]")
+        print("用法: python publish.py <项目名> [--local] [--yes]")
         avail = ", ".join(sorted(set(list(pending) + list(published))))
         print(f"可用项目: {avail}")
         sys.exit(1)
@@ -373,6 +377,27 @@ def main():
     if not ARTICLES_DIR or not ARTICLES_DIR.exists():
         print("❌ ARTICLES_DIR 未设置或目录不存在")
         sys.exit(1)
+
+    # ⚠️ 发布前确认门：防止"校验通过即自动发"。不带 --yes 时必须人工确认；
+    # 非交互环境（stdin 为 EOF）一律视为未确认，取消发布。
+    if "--yes" not in flags:
+        env_label = "本地(--local)" if not prod else "生产"
+        print("\n📋 发布预览:")
+        print(f"   项目: {project_key}")
+        print(f"   环境: {env_label}")
+        print(f"   来源: {'已发布存档（重跑/更新链接）' if source == 'published' else '待写队列'}")
+        for lang in ("zh", "en"):
+            lang_slug = slug_zh if lang == "zh" else slug_en
+            p = ARTICLES_DIR / lang / f"{lang_slug}.md"
+            print(f"   {lang}: {p if p.exists() else '（未找到，将跳过）'}")
+        try:
+            answer = input(f"\n确认发布到 {env_label} 环境？[y/N] ").strip().lower()
+        except EOFError:
+            answer = "n"
+        if answer != "y":
+            print("⏹️ 已取消，未发布任何内容")
+            sys.exit(1)
+        print()
 
     published_count = 0
     failed = 0
