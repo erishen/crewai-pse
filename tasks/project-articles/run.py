@@ -437,12 +437,13 @@ def phase2_write(ctx: RunContext, outline: str) -> str:
             body_text = phase2_write_full(ctx, outline, excerpts_block)
             title = extract_title(outline) or extract_title(body_text) or ctx.p["desc"]
 
+        cats = ", ".join(f'"{c}"' for c in project_categories(ctx.p))
         front_matter = (
             f"---\n"
             f"title: {title}\n"
             f"date: {date.today().isoformat()}\n"
             f"slug: {ctx.project_key.replace('-', '_')}\n"
-            f"categories: [{', '.join(f'\"{c}\"' for c in project_categories(ctx.p))}]\n"
+            f"categories: [{cats}]\n"
             f"---\n\n"
         )
         return sanitize_frontmatter(front_matter + body_text, ctx.p["desc"])
