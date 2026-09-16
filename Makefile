@@ -1,9 +1,13 @@
 .PHONY: install lint test clean articles articles-free articles-paid publish archive translate translate-free translate-paid validate discover sync-links check-links
 
-# 出网代理：统一从 .env 的 WP_PROXY 读取（换端口只改 .env 一处）。
+# 出网代理：优先用环境里已有的 WP_PROXY（容器部署会注入 host.docker.internal 形态），
+# 未设置时回退读 .env 的 WP_PROXY（本机默认，换端口只改 .env 一处）。
 # 原先 shell 里是 7890 已失效，会导致发布/调外部 API 时 ECONNREFUSED 127.0.0.1:7890；
 # 这里导出正确的端口，覆盖 shell 里的旧值，axios(node)/uv 均会沿用。
-export WP_PROXY := $(shell grep '^WP_PROXY=' .env 2>/dev/null | cut -d= -f2)
+# ⚠️ 必须用 ?=（不能是 :=）：makefile 赋值会压过环境变量，容器里注进来的 WP_PROXY
+# 会被 .env 的 127.0.0.1:7897 覆盖成容器内死地址（2026-09-16 实测 make -p 确认）。
+WP_PROXY ?= $(shell grep '^WP_PROXY=' .env 2>/dev/null | cut -d= -f2)
+export WP_PROXY
 export HTTP_PROXY := $(WP_PROXY)
 export HTTPS_PROXY := $(WP_PROXY)
 
