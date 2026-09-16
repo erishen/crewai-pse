@@ -719,4 +719,23 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # CPython 3.13 在解释器 finalization 阶段对「仍存活的 daemon 线程持 stdin 锁」
+    # 直接致命退出 (SIGABRT/134)。CrewAI 的 telemetry / asyncio 后台线程会在主流程结束后
+    # 仍存活，被回收时与 stdin 缓冲锁竞争 → 进程崩溃。这里统一用 os._exit 跳过 finalization，
+    # 避免任何遗留后台线程触发该死锁。文章已用 write_text 同步落盘，跳过清理是安全的。
+    try:
+        main()
+    except SystemExit as exc:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exc.code if isinstance(exc.code, int) else 0)
+    except BaseException:
+        import traceback as _tb
+
+        _tb.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

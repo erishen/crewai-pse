@@ -7,10 +7,16 @@
 只做引导，不定义任何业务常量（那些在 config.py）。
 """
 
+import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# 禁用 CrewAI 后台遥测线程：该线程在主流程结束后仍存活，会在解释器退出
+# (finalization) 阶段与 stdin 缓冲锁竞争，触发 CPython 3.13 的致命错误
+# (_enter_buffered_busy, SIGABRT/134)。配合 run.py 的 os._exit 退出兜底。
+os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "1")
 
 # BASE = tasks/project-articles，CREWAI_PSE_ROOT = frameworks/crewai-pse
 BASE = Path(__file__).resolve().parent.parent
