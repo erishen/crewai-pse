@@ -110,7 +110,9 @@ def insert_section(text, block):
     m = re.search(r"\n## License", text)
     if m:
         idx = m.start() + 1
-        return text[:idx] + block + text[idx:]
+        # 章节点后补一个空行，与 replace_section 的 glue 保持一致：否则首次插入
+        # 与「替换」产物不同（少一个空行），第二次运行又会改写文件 —— 破坏幂等。
+        return text[:idx] + block + "\n" + text[idx:]
     return text.rstrip("\n") + "\n\n" + block
 
 
