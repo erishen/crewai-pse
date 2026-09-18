@@ -116,10 +116,26 @@ def insert_section(text, block):
     return text.rstrip("\n") + "\n\n" + block
 
 
-def make_block(heading, items, titles):
-    # 注意：标题后不加空行，与已发布到 GitHub 的 README 格式保持一致
+def has_blank_after_heading(txt, heading):
+    """True when the section heading is already followed by a blank line.
+
+    Some repos lint markdown with Prettier, which requires a blank line after a
+    heading; rewriting such a section without one makes every run produce a diff
+    that Prettier then rejects (resolve-studio hit exactly this). Preserve the
+    file's existing style instead of forcing one convention.
+    """
+    m = re.search(r"^" + re.escape(heading) + r"(?!#)[^\n]*\n", txt, re.M)
+    if not m:
+        return False
+    return re.match(r"[ \t]*\n", txt[m.end():]) is not None
+
+
+def make_block(heading, items, titles, blank_after_heading=False):
+    # 注意：默认标题后不加空行，与已发布到 GitHub 的 README 格式保持一致
     # （线上是 `## Related Articles` 直接接列表项，无空行；加空行会导致 re-run 时产生 diff）
     lines = [heading]
+    if blank_after_heading:
+        lines.append("")
     for wp, link in items:
         title = titles.get(wp, link)
         lines.append(f"- [{title}]({link})")
@@ -133,8 +149,8 @@ def sync_file(path, heading, items, titles, dry, changed):
     hand-maintained subsection like '### Related Articles' under a resources
     section) — re-inserting would duplicate the same links.
     """
-    block = make_block(heading, items, titles)
     txt = open(path, encoding="utf-8").read()
+    block = make_block(heading, items, titles, has_blank_after_heading(txt, heading))
     new = replace_section(txt, heading, block)
     if new is None:
         if all(link in txt for _, link in items):
