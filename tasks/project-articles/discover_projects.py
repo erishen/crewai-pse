@@ -33,7 +33,7 @@ PUBLISHED_FILE = BASE / "projects-published.json"
 SKIP_DIRS = {
     "_archived", "github", "node_modules", ".venv", "venv",
     "__pycache__", ".git", "dist", "build", ".next", ".cache",
-    "articles", "tasks", "skills",
+    "articles", "tasks", "skills", ".workbuddy", "tmp",
 }
 
 # 跳过的路径前缀（相对 BIG_ROOT）
