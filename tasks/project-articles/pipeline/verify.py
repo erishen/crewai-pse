@@ -102,6 +102,7 @@ _LEGIT_CONTEXT_RE = re.compile(
 _SCAN_EXTS = (
     "*.py", "*.md", "*.ts", "*.tsx", "*.js", "*.jsx",
     "*.java", "*.kt", "*.go", "*.rs", "*.c", "*.h", "*.cpp", "*.cc",
+    "*.lume",
 )
 _SKIP_DIRS = (".venv", "__pycache__", "node_modules", ".src_cache", "target", "build", ".gradle")
 
@@ -452,6 +453,16 @@ def extract_real_symbols(source_dir: Path) -> set[str]:
             m = re.match(r"^\s*(?:export\s+)?(?:default\s+)?(?:class|interface)\s+(\w+)", line)
             if m:
                 symbols.add(m.group(1).lower())
+                continue
+            # Lume DSL: func 函数定义 / tool agent 工具定义（含 repo_* / github_* 等）
+            m = re.match(r"^\s*func\s+(\w+)\s*\(", line)
+            if m:
+                symbols.add(m.group(1).lower())
+                continue
+            m = re.match(r'^\s*tool\s+"([\w]+)"', line)
+            if m:
+                symbols.add(m.group(1).lower())
+                continue
     return symbols
 
 

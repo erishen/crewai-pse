@@ -88,7 +88,7 @@ MAX_EXCERPT_FILES = 8
 MAX_EXCERPT_CHARS = 6000
 
 # 语言标签 → 代码块语言标识
-_EXT_LANG = {".py": "python", ".ts": "typescript", ".tsx": "tsx", ".js": "javascript", ".jsx": "jsx"}
+_EXT_LANG = {".py": "python", ".ts": "typescript", ".tsx": "tsx", ".js": "javascript", ".jsx": "jsx", ".lume": "lume"}
 
 
 @dataclass
