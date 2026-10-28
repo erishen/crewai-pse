@@ -4,6 +4,7 @@
     "desc": "项目简短描述",
     "highlights": "核心技术亮点",
     "source_dir": "relative/path/to/project",
+    "extra_source_dirs": ["relative/path/to/runtime-dependency-repo"],
     "published": {
       "zh": {
         "link": "https://example.com/post-slug",

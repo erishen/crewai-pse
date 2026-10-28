@@ -11,3 +11,7 @@ styles-history.json
 .src_cache/
 .pse_tmp/
 .serena
+
+# 一次性隐私审计/整改脚本（含私有仓名清单与误发布史，不进公开仓）
+tasks/project-articles/audit_visibility.py
+tasks/project-articles/remediate_private.py

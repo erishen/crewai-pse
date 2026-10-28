@@ -14,6 +14,9 @@
 10. 源码真实性对拍（source-truth，软警告）：抽取文章里反引号/代码块中的函数名、
     命令、文件路径、常量，去 projects.json 声明的 source_dir 真实源码树 grep，
     找不到的发警告（不阻断发布）——专治「文档名≠代码名 / 编造符号」类失真。
+    若项目依赖其他仓的运行时符号（如 lume-scanner 引用 lume/lume-core 内建），
+    在 projects.json 条目里加 "extra_source_dirs": ["work/lume/lume", ...]，
+    这些仓的源码会一并并入对拍语料，避免把真实依赖符号误报为编造。
 
 用法：python validate.py <project_key> [--no-source-truth]
 退出码：0=全部通过，1=有错误，2=参数错误
@@ -82,6 +85,7 @@ _CODE_EXT = {
     ".cc", ".cpp", ".c", ".h", ".hpp", ".hxx", ".js", ".mjs", ".cjs",
     ".ts", ".tsx", ".jsx", ".py", ".go", ".rs", ".java", ".kt", ".swift",
     ".m", ".mm", ".sh", ".json", ".gradle", ".gyp", ".toml", ".yml", ".yaml",
+    ".lume",   # Lume 脚本/引擎源码：函数定义（safe_json/accounts_map 等）是权威真相
 }
 # TODO 编号（如 P0-001）：以文档 TODO.md 为权威，仅出现在文档里不算失真。
 _TODO_ID_RE = re.compile(r"^P\d-\d{3}$")
@@ -112,13 +116,15 @@ def _index_source(source_dir: Path) -> tuple[set[str], str, str]:
         ext = p.suffix.lower()
         # 配置样例（.env.example 等）里的常量名也是代码真相，按代码索引
         is_cfg_sample = p.name == ".env.example" or p.name.endswith(".env.example")
+        # Makefile 无扩展名，但 make <target> 校验依赖它；显式当作代码真相
+        is_makefile = p.name in ("Makefile", "makefile", "GNUmakefile")
         if ext in _DOC_EXT:
             try:
                 doc_texts.append(p.read_text(encoding="utf-8", errors="strict"))
             except (UnicodeDecodeError, OSError):
                 pass
             continue
-        if ext not in _CODE_EXT and not is_cfg_sample:
+        if ext not in _CODE_EXT and not is_cfg_sample and not is_makefile:
             continue
         src_relpaths.add(rel)
         priority = 0 if any(d in p.parts for d in _SRC_PRIORITY_DIRS) else 1
@@ -491,16 +497,25 @@ def validate_project(project_key: str, no_source_truth: bool = False) -> CheckRe
 
     # 0. 解析源码目录（供 source-truth 对拍）
     source_dir = None
+    extra_dirs: list[Path] = []
     if not no_source_truth and PROJECTS_FILE.exists():
         try:
             pj = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
-            sd = (pj.get(project_key) or {}).get("source_dir")
+            entry = pj.get(project_key) or {}
+            sd = entry.get("source_dir")
             if sd:
                 cand = SOURCE_ROOT / sd
                 if cand.exists():
                     source_dir = cand
                 else:
                     r.warn(f"  ⚠️  [source-truth] projects.json 的 source_dir 不存在: {cand}")
+            # 运行时依赖仓（可选）：其源码并入对拍语料，见模块 docstring 第 10 条
+            for dep in entry.get("extra_source_dirs") or []:
+                dep_cand = SOURCE_ROOT / dep
+                if dep_cand.exists():
+                    extra_dirs.append(dep_cand)
+                else:
+                    r.warn(f"  ⚠️  [source-truth] extra_source_dirs 条目不存在: {dep_cand}")
         except Exception as e:  # noqa: BLE001
             r.warn(f"  ⚠️  [source-truth] 读取 projects.json 失败: {e}")
 
@@ -556,6 +571,11 @@ def validate_project(project_key: str, no_source_truth: bool = False) -> CheckRe
     if source_dir is not None and not no_source_truth:
         print("\n🔎 源码真实性对拍 (source-truth)")
         src_relpaths, src_blob, doc_blob = _index_source(source_dir)
+        # 依赖仓源码并入对拍语料（标识符级）；文件路径类 token 仍只对主仓校验
+        for dep_dir in extra_dirs:
+            _, dep_src, dep_doc = _index_source(dep_dir)
+            src_blob += "\n" + dep_src
+            doc_blob += "\n" + dep_doc
         if src_blob or doc_blob:
             check_source_truth(zh_text, source_dir, src_relpaths, src_blob, doc_blob, "中文", r)
             if en_path.exists():

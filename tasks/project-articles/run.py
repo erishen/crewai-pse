@@ -135,6 +135,42 @@ def quarantine(article: str, slug_zh: str, reason: str = "") -> None:
         print(f"   隔离原因 → {reason_path.name}: {reason_text}")
 
 
+def save_draft(ctx: RunContext, article: str, phase: str) -> None:
+    """增量落盘：每个 Phase 边界把当前最新成品写入 drafts/，超时被杀也能恢复。
+
+    每个阶段覆盖写同名阶段文件（drafts/{slug_zh}.{phase}.md），始终保留「最近一次
+    成功完成阶段」的内容。正文定稿前若被 SIGTERM（如 resolve-studio 的 30 分钟超时墙）
+    杀死，已有阶段草稿可断点续跑——无需从 Planner 重头来过。
+
+    drafts/ 是纯运行时草稿目录，正常定稿后由 clear_drafts 清理。
+
+    注：LLM 调用本身是阻塞的，进程被 SIGTERM 时收不到信号也不该依赖信号处理；
+    增量落盘的价值在于「杀之前最后一个完成的阶段已经落盘」，因此是阶段边界写、而非
+    靠捕获信号。
+    """
+    draft_dir = ARTICLES_DIR / "drafts"
+    draft_dir.mkdir(parents=True, exist_ok=True)
+    dp = draft_dir / f"{ctx.slug_zh}.{phase}.md"
+    dp.write_text(article, encoding="utf-8")
+    print(f"   草稿增量落盘 [{phase}] → {dp}")
+
+
+def clear_drafts(ctx: RunContext) -> None:
+    """正常定稿完成后清理草稿（zh/ 已是权威成品，drafts/ 无保留价值）。"""
+    draft_dir = ARTICLES_DIR / "drafts"
+    if not draft_dir.exists():
+        return
+    removed = 0
+    for dp in draft_dir.glob(f"{ctx.slug_zh}.*.md"):
+        try:
+            dp.unlink()
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        print(f"🧹 已清理 {removed} 个草稿文件（定稿成功，zh/ 为权威成品）")
+
+
 def parse_args(projects: dict):
     """解析命令行参数，返回 (project_key, do_publish, do_translate_only, style_override)。"""
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
@@ -599,11 +635,16 @@ def phase4_finalize(ctx: RunContext, article: str) -> str:
     else:
         print(f"📝 TL;DR: {zh_tldr_count} 条")
 
+    # 增量落盘：Phase 4 的 LLM 步骤（excerpt 生成）耗时且不可中断恢复，
+    # 先把已完成全部变换的定稿写入草稿，即便此刻被杀也能从草稿恢复。
+    save_draft(ctx, article, "p4-finalized")
+
     zh_path = ARTICLES_DIR / "zh" / f"{ctx.slug_zh}.md"
     zh_path.parent.mkdir(parents=True, exist_ok=True)
     zh_path.write_text(article, encoding="utf-8")
     print(f"\n✅ 中文已保存 → {zh_path}")
     record_style(ctx.project_key, ctx.style_override)
+    clear_drafts(ctx)
     return article
 
 
@@ -676,6 +717,7 @@ def main():
     ctx.batches = parse_batches(outline, source_dir)
     batch_summary = ", ".join(f"{len(b['files'])}个文件" for b in ctx.batches)
     print(f"📦 文件分 {len(ctx.batches)} 批: {batch_summary}")
+    save_draft(ctx, f"# 规划提纲\n\n{outline}\n", "p1-outline")
 
     # ── Phase 2: 写作 ──
     # 旧方案让 Specialist 同时读源码 + 写文章，模型把「让我先读取…」这类工具调用前的
@@ -684,6 +726,8 @@ def main():
     # ② Writer Agent 不带任何文件工具（create_writer, tools=[]），物理上无法 read_file；
     # ③ 五段式骨架由程序生成，强制章节结构，不依赖模型自发遵守。
     article = phase2_write(ctx, outline)
+    # Phase 2 是耗时大头（逐节 LLM 写作），先落盘正文，避免被超时墙杀掉后整轮白做
+    save_draft(ctx, article, "p2-body")
 
     if not article:
         print("❌ Specialist 未输出任何内容")
@@ -709,6 +753,7 @@ def main():
     article = phase3_verify(ctx, article)
     if article is None:
         return  # 已隔离
+    save_draft(ctx, article, "p3-verified")
 
     # ── Phase 4: 中文定稿 ──
     article = phase4_finalize(ctx, article)

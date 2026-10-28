@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -44,28 +45,49 @@ def check_repo_visibility(repo_name: str) -> tuple[str, bool]:
     """检查 GitHub 仓库可见性，返回 (visibility, reachable)。
 
     visibility: "public" / "private" / "unknown"
-    reachable: 仓库是否存在且可访问
+    reachable:  仓库是否可被 API 解析（存在，且公开或持 token 可见）
+
+    实现用 curl + GitHub REST API（容器镜像自带 curl，运行时注入 GITHUB_TOKEN），
+    **不再依赖 gh CLI**——resolve-studio 镜像没装 gh，旧实现会因 FileNotFoundError
+    返回 ("gh_not_installed", True)，主循环又只拦截 private / not-reachable，
+    导致私有仓被静默当成公开仓落库（隐私泄露）。
+
+    重要：本函数对「无法确认公开」的情况一律保守返回 reachable=False，
+    由调用方失败关闭（只显式 public 才落库）。
     """
+    token = os.environ.get("GITHUB_TOKEN")
+    url = f"https://api.github.com/repos/{repo_name}"
+    # -w 把 HTTP 状态码附在 body 之后，便于区分 200/404/403/网络失败。
+    # token 经 curl -K -（config 从 stdin 读）传入，而不是 -H 进 argv——
+    # 命令行参数对同机所有进程可见（ps/活动监视器），stdin 不可见。
+    cmd = ["curl", "-s", "-m", "10", "-w", "\n%{http_code}"]
+    stdin_text = None
+    if token:
+        cmd += ["-K", "-"]
+        stdin_text = f'header = "Authorization: Bearer {token}"\n'
+    cmd.append(url)
     try:
-        result = subprocess.run(
-            ["gh", "repo", "view", repo_name, "--json", "visibility,isPrivate"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            vis = data.get("visibility", "unknown").lower()
-            return vis, True
-        # 404 或无权限
-        if "Could not resolve" in result.stderr or "Not Found" in result.stderr:
-            return "not_found", False
-        return "unknown", False
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
+                                input=stdin_text)
     except FileNotFoundError:
-        # gh CLI 未安装
-        return "gh_not_installed", True
+        # 连 curl 都没有：失败关闭
+        return "curl_not_installed", False
     except Exception:
         return "error", False
+
+    out = result.stdout.strip()
+    body, _, code = out.rpartition("\n")
+    code = code.strip()
+    if code == "200":
+        try:
+            data = json.loads(body)
+        except Exception:
+            return "unknown", True
+        if data.get("private"):
+            return "private", True
+        return "public", True
+    # 404=不存在/无权限(私有且无 token)；403=限流或越权；其余=网络/未知失败
+    return "unknown", False
 
 
 def has_github_remote(repo_dir: Path) -> str | None:
@@ -377,23 +399,24 @@ def main():
     print(f"{'='*60}\n")
 
     suggestions = {}
-    unreachable = []
+    unreachable = []   # 可见性未确认（不可达/限流/无凭证/curl缺失）——失败关闭，跳过
     private_repos = []
     for p in sorted(new_projects, key=lambda x: x["path"]):
         key = p["dir"].name
 
-        # 检查远程仓库可达性和可见性
+        # 检查远程仓库可见性（失败关闭：仅显式 public 才落库）
         visibility, reachable = check_repo_visibility(p["repo"])
-        if not reachable:
-            unreachable.append((key, p["repo"], p["path"]))
-            print(f"⚠️  跳过 {key} — 远程仓库不可达 ({p['repo']})")
-            continue
-        if visibility == "private":
+        if visibility == "public" and reachable:
+            print(f"🌐 公开仓库 {key} — {p['repo']}")
+        elif visibility == "private":
             private_repos.append((key, p["repo"], p["path"]))
             print(f"🔒 跳过私有仓库 {key} — {p['repo']}")
             continue
-        if visibility == "public":
-            print(f"🌐 公开仓库 {key} — {p['repo']}")
+        else:
+            # unknown / error / curl_not_installed / 404 / 403 / 无网络
+            unreachable.append((key, p["repo"], p["path"], visibility))
+            print(f"⚠️  跳过 {key} — 可见性未确认为公开 ({p['repo']}, {visibility})")
+            continue
 
         desc = guess_desc(p["dir"])
         highlights = guess_highlights(p["dir"])
@@ -416,13 +439,13 @@ def main():
         print()
 
     if unreachable:
-        print(f"⚠️  远程不可达（本地配置了 origin 但 GitHub 上不存在/无权限）: {len(unreachable)} 个")
-        for key, repo, path in unreachable:
-            print(f"   - {key} ({repo}) → {path}")
+        print(f"⚠️  可见性未确认为公开（不可达/限流/无凭证/curl缺失/404）: {len(unreachable)} 个")
+        for key, repo, path, vis in unreachable:
+            print(f"   - {key} ({repo}) → {path}  [{vis}]")
         print()
 
     print(f"{'='*60}")
-    print(f"共 {len(suggestions)} 个新项目建议（跳过 {len(private_repos)} 个私有，{len(unreachable)} 个不可达）")
+    print(f"共 {len(suggestions)} 个新项目建议（跳过 {len(private_repos)} 个私有，{len(unreachable)} 个可见性未确认）")
 
     if add_mode:
         # 合并写入
