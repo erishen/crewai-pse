@@ -51,6 +51,8 @@ from pipeline.config import (  # noqa: E402
     ARTICLES_DIR,
     CREWAI_PSE_LEAK,
     FIVE_PART_SPEC,
+    MAX_RANKED_SYMBOLS,
+    MIN_PROJECT_RELEVANCE,
     ROOT,
     STYLE_NAMES,
     STYLE_SPECS,
@@ -82,14 +84,24 @@ from pipeline.seo import auto_description, generate_excerpt, inject_series_links
 from pipeline.source import load_projects, parse_batches, src_mirror  # noqa: E402
 from pipeline.styles import pick_style, pick_variants, record_style  # noqa: E402
 from pipeline.translate import translate  # noqa: E402
-from pipeline.verify import extract_real_symbols, verify_article  # noqa: E402
+from pipeline.verify import (  # noqa: E402
+    project_relevance,
+    rank_real_symbols,
+    verify_article,
+)
 
 # 喂给 Writer 的源码片段上限：文件数与单文件字符数
 MAX_EXCERPT_FILES = 8
 MAX_EXCERPT_CHARS = 6000
 
-# 语言标签 → 代码块语言标识
-_EXT_LANG = {".py": "python", ".ts": "typescript", ".tsx": "tsx", ".js": "javascript", ".jsx": "jsx", ".lume": "lume"}
+# 语言标签 → 代码块语言标识。缺标签会让 C / shell / mjs 源码在 Writer 眼里
+# 变成一坨无语法文本，混合语言项目尤其容易因此丢掉核心代码证据。
+_EXT_LANG = {
+    ".py": "python", ".ts": "typescript", ".tsx": "tsx", ".js": "javascript",
+    ".jsx": "jsx", ".lume": "lume", ".mjs": "javascript", ".cjs": "javascript",
+    ".c": "c", ".h": "c", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml",
+    ".json": "json",
+}
 
 
 @dataclass
@@ -358,11 +370,17 @@ def phase2_write_sectioned(ctx: RunContext, excerpts_block: str) -> str:
     章节骨架由程序生成，模型只写每节正文，避免退化成通用架构模板。
     """
     spec = FIVE_PART_SPEC if ctx.style_override == "F" else STYLE_SPECS[ctx.style_override]
-    real_symbols = sorted(extract_real_symbols(ctx.source_dir))[:80]
+    # 旧代码 sorted(extract_real_symbols())[:80] 按字母序取前 80，大模型项目
+    # 拿到的全是 `_bs_pdf` / `a` / `ab` 噪声，却还被要求「严禁编造白名单外
+    # 符号」——等于逼模型造词。改用按可引用性排序 + 分层取样的真实声明。
+    real_symbols = rank_real_symbols(ctx.source_dir, MAX_RANKED_SYMBOLS)
     symbol_hint = (
-        "以下符号已确认存在于源码，引用代码时优先使用，严禁编造白名单外的符号：\n"
+        "以下是源码里确认存在、可优先引用的符号（**候选，非穷举**）：\n"
         + "、".join(f"`{s}`" for s in real_symbols)
-        if real_symbols else "（无额外符号提示）"
+        + "\n\n若候选不足以支撑本节论述，直接引用「真实源码片段」中确实出现的"
+          "函数/常量/类名，同样合规；**严禁自行造词或改写符号名**。"
+        if real_symbols
+        else "（无符号候选：只引用「真实源码片段」中确实出现的标识符，严禁自行造词）"
     )
     section_bodies: list[str] = []
     prev_text = "（本节是全文第一节）"
@@ -494,6 +512,25 @@ def phase2_write(ctx: RunContext, outline: str) -> str:
 # ── Phase 3：核查与修正 ──
 
 
+def _relevance_issue(ctx: RunContext, article: str) -> str | None:
+    """项目相关性硬闸：返回隔离原因，通过则返回 None。
+
+    verify_article 只查「写出来的符号是否真实」（假阳性）。一篇零代码引用、
+    零技术栈的通用架构议论文同样能全绿通过——本次 resolve-lume 残稿就是
+    这样落盘并翻译的。这里补「假阴性」检查：文章必须真的绑定目标项目。
+    得分口径见 verify.project_relevance（项目名 + 真实符号命中）。
+    """
+    score, detail = project_relevance(article, ctx.project_key, ctx.source_dir)
+    if score >= MIN_PROJECT_RELEVANCE:
+        return None
+    return (
+        f"项目相关性不足（得分 {score} < {MIN_PROJECT_RELEVANCE}）："
+        f"项目名命中 {detail['name_hits']} 次、真实符号命中 "
+        f"{len(detail['symbol_hits'])} 个 {detail['symbol_hits'][:6]}；"
+        "疑似写成通用架构议论文而非本项目"
+    )
+
+
 def phase3_verify(ctx: RunContext, article: str) -> str | None:
     """核查循环：LLM 修正（非骨架风格）或程序化删除（骨架风格），失败则隔离。
 
@@ -543,6 +580,13 @@ def phase3_verify(ctx: RunContext, article: str) -> str | None:
                 print(f"\n❌ 程序化修正后仍残留 {len(code_refs)} 项虚构引用: {', '.join(code_refs)}")
                 print("   文章不可发布。已隔离至 needs-review 目录，请检查 grounding 约束或源码。")
                 quarantine(article, ctx.slug_zh, f"程序化修正后仍残留 {len(code_refs)} 项虚构代码引用: {', '.join(code_refs)}")
+                return None
+            # 骨架分支不走 :552 的跑题检测与 LLM 重写，这里是它唯一的
+            # 出口；删改可能把仅有的真实引用删光，放行前必须复检项目绑定。
+            issue = _relevance_issue(ctx, article)
+            if issue:
+                print(f"\n❌ 程序化删改后 {issue}，隔离待复核")
+                quarantine(article, ctx.slug_zh, f"程序化删改后：{issue}")
                 return None
             print(f"  ✅ 程序化修正完成，虚构引用已清除（验证通过 {len(verified)} 项），骨架结构完好")
             break
@@ -751,8 +795,16 @@ def main():
     # 有效性闸门：免费模型可能产出非文章（计划口吻 / 工具回显 / 过短）。
     # 此时绝不保存中文、绝不翻译（翻译拿到垃圾会凭空编造），直接隔离待复核。
     if not is_valid_article(article):
-        print("❌ 文章未通过有效性闸门（疑似非文章/过短/跑题），隔离待复核，不翻译")
-        quarantine(article, ctx.slug_zh, "未通过有效性闸门（疑似非文章/过短/跑题）")
+        print("❌ 文章未通过有效性闸门（疑似非文章/过短/计划口吻），隔离待复核，不翻译")
+        quarantine(article, ctx.slug_zh, "未通过有效性闸门（疑似非文章/过短/计划口吻）")
+        return
+
+    # 项目相关性硬闸（假阴性）：在任何核查、清洗、翻译之前先确认这篇
+    # 文章真的在讲目标项目。is_valid_article 只查形态，查不出跑题。
+    issue = _relevance_issue(ctx, article)
+    if issue:
+        print(f"❌ {issue}，隔离待复核，不翻译")
+        quarantine(article, ctx.slug_zh, issue)
         return
 
     # 思维链泄漏硬闸：任何风格都不允许内部推理独白进入成品。

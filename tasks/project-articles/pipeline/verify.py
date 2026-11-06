@@ -11,6 +11,8 @@
 """
 
 import re
+from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 from pipeline.config import EXAGGERATED_TERMS
@@ -476,6 +478,154 @@ def extract_real_symbols(source_dir: Path) -> set[str]:
                 symbols.add(m.group(1).lower())
                 continue
     return symbols
+
+
+# ── 项目相关性与 Writer 符号候选排序 ─────────────────────────────────
+# extract_real_symbols() 返回小写化全集：大型混合语言项目（如 190 个 .lume
+# + 110 个 .c）可达数千个符号，其中大量是 `_bs_pdf` / `a` / `ab` 这类底层
+# 或单双字母噪声。旧调用 sorted(...)[:80] 取字母序前 80 个喂给 Writer，
+# 白名单几乎全是噪声，却配了「严禁编造白名单外符号」——模型只能无视或造词。
+# 下面两个函数分别修「输入质量」和「跑题没有闸门」。
+
+_SYMBOL_NOISE_LOWER = {s.lower() for s in PYTHON_KEYWORDS | JS_TS_KEYWORDS}
+
+
+def _clean_ref(ref: str) -> str | None:
+    """把文章里的引用归一化为可比对符号；噪声引用返回 None。"""
+    s = ref.strip().strip("`").lower()
+    if len(s) < 4 or s.startswith("_") or s.endswith("."):
+        return None
+    if not re.fullmatch(r"[a-z][a-z0-9_./-]*", s):
+        return None
+    if s in _SYMBOL_NOISE_LOWER:
+        return None
+    return s
+
+
+@lru_cache(maxsize=8)
+def _cached_symbols(source_dir_str: str) -> frozenset[str]:
+    """缓存一次源码扫描结果；核查循环与相关性闸门要重复用。"""
+    return frozenset(extract_real_symbols(Path(source_dir_str)))
+
+
+_DECL_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?"
+    r"(?:function|const|let|var|class|interface|def|func|macro)\s+"
+    r"([A-Za-z_]\w*)",
+    re.MULTILINE,
+)
+
+
+def rank_real_symbols(source_dir: Path, limit: int = 80) -> list[str]:
+    """按「可引用性」排序真实符号，替代 sorted(...)[:limit]。
+
+    只按文档词频排会被 `lume` / `server` / `backend` 这类通用高频词霸榜，
+    模型照样拿不到可引用的 API。因此以「源码里显式声明的符号」为主信号
+    （+8），文档词频只作弱加权且封顶 10，另加多词名/文件主干名加成。
+    返回**原大小写**写法（如 `streamChat`），便于 Writer 正确引用；
+    grounding 比对仍在 `_extract_refs` 侧做小写归一化。
+    """
+    symbols = _cached_symbols(str(source_dir))
+    doc_freq: Counter[str] = Counter()
+    file_stems: set[str] = set()
+    declared: set[str] = set()
+    case_map: dict[str, str] = {}
+    for f in _iter_source_files(source_dir):
+        file_stems.add(f.stem.lower())
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if f.suffix == ".md":
+            for word in re.findall(r"\b[a-z_][a-z0-9_]{3,}\b", text.lower()):
+                if word in symbols:
+                    doc_freq[word] += 1
+            continue
+        for m in _DECL_RE.finditer(text):
+            name = m.group(1)
+            if len(name) >= 4 and not name.startswith("_"):
+                declared.add(name.lower())
+                case_map.setdefault(name.lower(), name)
+
+    scored: list[tuple[int, str]] = []
+    for s in symbols:
+        if len(s) < 4 or s.startswith("_") or s in _SYMBOL_NOISE_LOWER:
+            continue
+        # 全大写的是环境变量 / C 宏（LLM_API_KEY、CONTENT_LENGTH …），
+        # 不是可引用的函数或类。注意 symbols 是小写集合，必须按原写法判断。
+        display = case_map.get(s, s)
+        if display.isupper():
+            continue
+        # 候选池收紧到「源码里显式声明的符号」+「源码文件主干名」。
+        # 只在 README 里高频出现的通用词（server / backend / lume …）不该
+        # 挤掉真正可引用的 API，否则又退化成一份看不懂的白名单。
+        if s not in declared and s not in file_stems:
+            continue
+        score = min(doc_freq[s], 6)
+        if s in declared:
+            score += 10
+        if "_" in s and not s.isupper():
+            score += 2
+        if len(s) >= 8:
+            score += 1
+        if s in file_stems:
+            score += 2
+        # 同分时优先长名（多为项目 API），再按字母序稳定兜底
+        scored.append((score, len(display), display))
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    # 分层取样：同分符号极多时，纯按「分数→长度→字母序」会让 A-C 段
+    # 占满名额，s/t 段的项目 API 集体落榜——这正是旧 sorted()[:80] 的
+    # 字母序偏置病根。按首字母分桶轮转，保证各段都有代表。
+    buckets: dict[str, list[str]] = {}
+    for _score, _length, display in scored:
+        buckets.setdefault(display[0].lower(), []).append(display)
+    out: list[str] = []
+    while len(out) < limit:
+        added = False
+        for letter in sorted(buckets):
+            if buckets[letter]:
+                out.append(buckets[letter].pop(0))
+                added = True
+                if len(out) >= limit:
+                    break
+        if not added:
+            break
+    return out
+
+
+def project_relevance(text: str, project_key: str,
+                      source_dir: Path | None) -> tuple[int, dict]:
+    """量化文章与目标项目的绑定程度，返回 (得分, 明细)。
+
+    得分 = 项目名/词命中（每次 1 分，上限 5）+ 真实符号命中（每个 2 分，
+    上限 20）。这是「假阴性」闸门：verify_article 只查写出来的符号是否
+    真实（假阳性），而一篇零引用、零技术栈的通用议论文同样能全绿通过。
+
+    project_key / source_dir 缺失时返回哨兵高分（不拦截），以保持
+    纯文本校验场景的向后兼容。
+    """
+    detail: dict = {"name_hits": 0, "symbol_hits": [], "score": 0}
+    if not project_key or source_dir is None:
+        detail["score"] = 999
+        return 999, detail
+
+    lower = text.lower()
+    parts = [p for p in re.split(r"[-_/\s]+", project_key) if p]
+    full_re = r"\b" + r"[-_\s]?".join(re.escape(p) for p in parts) + r"\b"
+    name_hits = len(re.findall(full_re, lower))
+    for part in parts:
+        if len(part) >= 4:
+            name_hits += len(re.findall(r"\b" + re.escape(part) + r"\b", lower))
+    detail["name_hits"] = name_hits
+
+    symbols = _cached_symbols(str(source_dir))
+    refs = {_clean_ref(r) for r in _extract_refs(text)}
+    hits = sorted(r for r in refs if r and r in symbols)
+    detail["symbol_hits"] = hits
+
+    score = min(5, name_hits) + min(20, len(hits) * 2)
+    detail["score"] = score
+    return score, detail
 
 
 def _extract_java_symbols(source_dir: Path) -> set[str]:

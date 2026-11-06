@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from pipeline import verify
+from pipeline.config import MIN_PROJECT_RELEVANCE
 
 
 def _w(p: Path, content: str = "") -> None:
@@ -140,3 +141,66 @@ def test_verify_article_passes_real_code_block():
         )
         assert not any("证据残缺" in x for x in bad)
         assert bad == []
+
+
+# ── 回归：跑题闸门 + Writer 符号候选（resolve-lume 通用议论文残稿事故）──
+
+def test_rank_real_symbols_drops_noise_and_preserves_case():
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "api.ts",
+           "export async function streamChat() {}\n"
+           "function readFrames() {}\n"
+           "const CONTENT_LENGTH = 4096;\n"
+           "const a = 1;\nlet ab = 2;\n")
+        _w(sd / "README.md", "server backend server backend streamChat\n")
+        ranked = verify.rank_real_symbols(sd, 40)
+        # 真实声明保留原大小写，噪声（单双字母 / 下划线 / 全大写宏）全部剔除
+        assert "streamChat" in ranked
+        assert "readFrames" in ranked
+        assert "CONTENT_LENGTH" not in ranked
+        assert all(not (s.startswith("_") or len(s) <= 2 or s.isupper()) for s in ranked)
+
+
+def test_rank_real_symbols_does_not_collapse_to_alphabetical_head():
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        # 104 个同分声明，首字母轮转 a-z。旧 sorted()[:N] 会全挤在 a/b/c 段。
+        lines = [f"function {chr(97 + i % 26)}Api{i:03d}() {{}}" for i in range(104)]
+        _w(sd / "many.ts", "\n".join(lines))
+        ranked = verify.rank_real_symbols(sd, 40)
+        assert len(ranked) == 40
+        assert len({s[0].lower() for s in ranked}) >= 10
+
+
+def test_project_relevance_flags_generic_essay():
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "api.ts", "export async function streamChat() {}\nfunction readFrames() {}\n")
+        generic = (
+            "## 流行做法\n\n" + "多数团队会把脚本搬到网页上，这是合理的默认选择。" * 20
+            + "\n\n## 质疑\n\n" + "当任务变长，长连接就不够用了。" * 20
+            + "\n\n这是 my-app 的一点说明。\n"
+        )
+        score, detail = verify.project_relevance(generic, "my-app", sd)
+        assert score < MIN_PROJECT_RELEVANCE
+        assert detail["symbol_hits"] == []
+
+
+def test_project_relevance_passes_grounded_article():
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "api.ts",
+           "export async function streamChat() {}\n"
+           "function readFrames() {}\nfunction parseFrame() {}\n")
+        art = ("## 实现\n\nmy-app 的流式链路：`streamChat` 调用 `readFrames`，"
+               "每帧交给 `parseFrame`。\n\n" + "my-app 的细节说明。" * 10)
+        score, detail = verify.project_relevance(art, "my-app", sd)
+        assert score >= MIN_PROJECT_RELEVANCE
+        assert {"streamchat", "readframes", "parseframe"} <= set(detail["symbol_hits"])
+
+
+def test_project_relevance_is_permissive_without_source():
+    # 纯文本校验场景（无 project_key / source_dir）保持向后兼容，不能误拦
+    assert verify.project_relevance("任意文字", "my-app", None)[0] == 999
+    assert verify.project_relevance("任意文字", "", Path("/tmp"))[0] == 999
