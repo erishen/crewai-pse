@@ -126,4 +126,14 @@ def translate(
         print(pub_result.stdout)
         if pub_result.returncode != 0:
             print(pub_result.stderr)
-            sys.exit(pub_result.returncode)
+            # 文章在此前已经用 write_text 同步落盘。发布是「可选附加动作」，
+            # 非交互环境下 publish.py 的确认门会取消并 exit 1 —— 旧实现把它
+            # 当成整次生成失败，导致 sidecar 返回 error 而非「已生成」，
+            # 模型进而谎报「文章没生成/出了小问题」。绝不因可选发布失败
+            # 推翻已经成功的生成结果。
+            print(
+                f"⚠️ 未发布：发布步骤返回码 {pub_result.returncode}；"
+                "文章已生成并保存，生成结果不受影响"
+            )
+        else:
+            print("✅ 发布步骤完成")

@@ -283,8 +283,14 @@ def phase1_plan(ctx: RunContext) -> str:
         agent=crew.agents[0],
     )
     crew.tasks = [planner_task]
+    # Python 3.13: asyncio.get_event_loop() 在无 current loop 时会隐式创建
+    # 一个并打印 `DeprecationWarning: There is no current event loop`。该行
+    # 会随 stderr 进入 sidecar 的工具进度流，被模型误读成「异步事件循环故障」
+    # （2026-11-06 实测：模型据此编造「出现了一个小问题」的安抚话术）。
+    # get_running_loop() 在同步主线程里必然抛 RuntimeError 且不打 warning，
+    # 语义仍是「确保存在一个可复用的 current loop」。
     try:
-        asyncio.get_event_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
     try:
@@ -521,15 +527,24 @@ def _relevance_issue(ctx: RunContext, article: str) -> str | None:
     得分口径见 verify.project_relevance（项目名 + 真实符号命中）。
     """
     score, detail = project_relevance(article, ctx.project_key, ctx.source_dir)
-    if score >= MIN_PROJECT_RELEVANCE:
+    if score >= MIN_PROJECT_RELEVANCE and detail.get("evidence_ok", True):
         return None
-    return (
-        f"项目相关性不足（得分 {score} < {MIN_PROJECT_RELEVANCE}）："
+    base = (
+        f"项目相关性不足（得分 {score}，阈值 {MIN_PROJECT_RELEVANCE}）："
         f"项目名命中 {detail['name_hits']} 次、真实符号命中 "
         f"{len(detail['symbol_hits'])} 个 {detail['symbol_hits'][:6]}、"
-        f"真实源码路径命中 {len(detail.get('path_hits', []))} 个 "
+        f"真实源码文件命中 {len(detail.get('path_hits', []))} 个 "
         f"{detail.get('path_hits', [])[:6]}；"
-        "疑似写成通用架构议论文而非本项目（提示：正文中应具体指认本项目的"
+    )
+    if not detail.get("evidence_ok", True):
+        return (
+            base + "零真实符号且只指认了不足 2 个源码文件——项目名刷屏与"
+            "反复引用同一个文件凑不出真实的技术绑定，疑似写成通用架构议论文。"
+            "正文中应具体指认至少 2 个本项目源码文件（如 `tests/foo.spec.ts`、"
+            "`src/api.ts`）或至少 1 个真实 API 符号。"
+        )
+    return (
+        base + "疑似写成通用架构议论文而非本项目（提示：正文中应具体指认本项目的"
         "源码文件与 API，例如 `tests/foo.spec.ts`、`streamChat`）"
     )
 

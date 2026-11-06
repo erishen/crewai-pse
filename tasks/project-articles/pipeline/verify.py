@@ -561,6 +561,31 @@ def _cached_paths(source_dir_str: str) -> frozenset[str]:
     return frozenset(paths)
 
 
+@lru_cache(maxsize=8)
+def _cached_full_paths(source_dir_str: str) -> frozenset[str]:
+    """项目里真实存在的「完整」相对路径（小写，至少两级）。
+
+    `_cached_paths` 为了兼容文章省略顶层目录的写法，把
+    `frontend/server-entrypoint.mjs` 与 `server-entrypoint.mjs` 都登记了。
+    计分时必须把这两种写法归一到同一个真实文件，否则反复引用同一个文件
+    就能白拿多份「路径证据」分（2026-11-06 实测：resolve-lume 通用议论文
+    只引一个文件却按 2 个命中拿 6 分，凑够阈值放行）。
+    """
+    root = Path(source_dir_str)
+    full: set[str] = set()
+    for ext in _PATH_SCAN_EXTS:
+        for f in root.rglob(ext):
+            if any(skip in str(f) for skip in _PATH_SKIP_DIRS):
+                continue
+            try:
+                rel = f.relative_to(root).as_posix().lower()
+            except ValueError:
+                continue
+            if "/" in rel:
+                full.add(rel)
+    return frozenset(full)
+
+
 def _extract_path_refs(text: str) -> set[str]:
     """提取文章里可能指向源码文件的路径引用；能否计分由白名单裁决。"""
     out: set[str] = set()
@@ -666,18 +691,26 @@ def project_relevance(text: str, project_key: str,
     """量化文章与目标项目的绑定程度，返回 (得分, 明细)。
 
     得分 = 项目名/词命中（每次 1 分，上限 5）+ 真实符号命中（每个 2 分，
-    上限 20）+ 真实源码路径命中（每个 3 分，上限 12）。这是「假阴性」闸门：
-    verify_article 只查写出来的符号是否真实（假阳性），而一篇零引用、零
-    技术栈的通用议论文同样能全绿通过。
+    上限 20）+ 真实源码「不同文件」命中（每个 3 分，上限 12）。这是「假阴性」
+    闸门：verify_article 只查写出来的符号是否真实（假阳性），而一篇零引用、
+    零技术栈的通用议论文同样能全绿通过。
 
     路径维度是给叙事型风格（A–E）补的：这类文章用 `tests/foo.spec.ts`
     之类的真实文件指认项目，而不是罗列 API 名。三路证据都必须能在
-    目标项目里查到，虚构符号/虚构路径一律不加分。
+    目标项目里查到，虚构符号/虚构路径一律不加分；同一个文件的完整路径与
+    省略目录的写法只算一次。
+
+    `evidence_ok` 是额外的硬条件：项目名刷屏最多白拿 5 分、单个文件最多
+    3 分，凑到 8 分阈值仍可能是零技术栈的通用议论文。必须至少有 1 个真实
+    符号，或至少 2 个不同的真实源码文件，才算真正绑定了项目。
 
     project_key / source_dir 缺失时返回哨兵高分（不拦截），以保持
     纯文本校验场景的向后兼容。
     """
-    detail: dict = {"name_hits": 0, "symbol_hits": [], "path_hits": [], "score": 0}
+    detail: dict = {
+        "name_hits": 0, "symbol_hits": [], "path_hits": [],
+        "score": 0, "evidence_ok": True,
+    }
     if not project_key or source_dir is None:
         detail["score"] = 999
         return 999, detail
@@ -697,8 +730,26 @@ def project_relevance(text: str, project_key: str,
     detail["symbol_hits"] = hits
 
     paths = _cached_paths(str(source_dir))
-    path_hits = sorted(p for p in _extract_path_refs(text) if p in paths)
+    full_paths = _cached_full_paths(str(source_dir))
+    # 归一到唯一真实文件：文章里同时写 `frontend/server-entrypoint.mjs` 与
+    # `server-entrypoint.mjs` 只算一个命中。
+    canon: set[str] = set()
+    for ref in _extract_path_refs(text):
+        if ref not in paths:
+            continue
+        # 一个后缀可能对应多个真实文件（例如 .backup/.../frontend/x.mjs 与
+        # frontend/x.mjs 都以 /x.mjs 结尾）。必须确定性地挑「正式源码」：
+        # 排除隐藏/备份目录，再取层级最短的一条；绝不能靠 set 迭代顺序。
+        candidates = [
+            fp for fp in full_paths
+            if (fp == ref or fp.endswith("/" + ref))
+            and not any(seg.startswith(".") for seg in fp.split("/"))
+        ]
+        if candidates:
+            canon.add(min(candidates, key=lambda fp: (fp.count("/"), fp)))
+    path_hits = sorted(canon)
     detail["path_hits"] = path_hits
+    detail["evidence_ok"] = bool(hits) or len(path_hits) >= 2
 
     score = (min(5, name_hits) + min(20, len(hits) * 2)
              + min(12, len(path_hits) * 3))

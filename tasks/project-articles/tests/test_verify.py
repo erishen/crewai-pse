@@ -247,14 +247,47 @@ def test_project_relevance_ignores_fictional_paths():
 
 
 def test_project_relevance_accepts_path_suffix_form():
-    """文章省略顶层目录（comps.spec.ts）也应命中真实文件。"""
+    """文章省略顶层目录（comps.spec.ts）也应命中真实文件，并归一到完整路径。"""
     with tempfile.TemporaryDirectory() as td:
         sd = Path(td)
         _w(sd / "tests" / "comps.spec.ts", "test('x', () => {})")
         art = "my-app 的用例集中在 `comps.spec.ts` 一个文件里。\n"
         score, detail = verify.project_relevance(art, "my-app", sd)
-        assert "comps.spec.ts" in detail["path_hits"]
+        assert detail["path_hits"] == ["tests/comps.spec.ts"]
         assert score >= 3
+
+
+def test_project_relevance_dedupes_one_file_written_two_ways():
+    """同一文件的完整路径 / 后缀形式只算 1 个证据，不能双计分白拿分。
+
+    11-06 实测：resolve-lume 通用议论文只引 frontend/server-entrypoint.mjs
+    一个文件，却因两种写法被算成 2 个 path_hits（6 分），加上项目名刷屏
+    凑够 11 分放行。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "frontend" / "entrypoint.mjs", "// thin entry point\n")
+        art = (
+            "resolve-lume 的入口是 `frontend/entrypoint.mjs`，"
+            "也就是 `entrypoint.mjs` 这个文件。\n\n" + "resolve-lume 的取舍。" * 12
+        )
+        score, detail = verify.project_relevance(art, "resolve-lume", sd)
+        assert detail["path_hits"] == ["frontend/entrypoint.mjs"]
+        # 只有一个真实文件、且没有真实 API 符号 ⇒ 证据硬条件不成立，
+        # 即使项目名刷屏把分数顶到 8 分也必须隔离
+        assert detail["evidence_ok"] is False
+        assert score == 8
+
+
+def test_project_relevance_picks_canonical_path_over_backup_copy():
+    """后缀匹配多个文件时必须确定性地选正式源码，不能随 set 迭代顺序漂移。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "frontend" / "entrypoint.mjs", "// real\n")
+        _w(sd / ".backup" / "old" / "frontend" / "entrypoint.mjs", "// backup\n")
+        art = "my-app 的入口是 `entrypoint.mjs`，见 `frontend/entrypoint.mjs`。\n"
+        _score, detail = verify.project_relevance(art, "my-app", sd)
+        assert detail["path_hits"] == ["frontend/entrypoint.mjs"]
 
 
 def test_project_relevance_ignores_root_level_generic_files():
