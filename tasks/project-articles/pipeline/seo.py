@@ -13,23 +13,53 @@ from pipeline.config import PUBLISHED_FILE
 from pipeline.frontmatter import extract_frontmatter
 
 
-def auto_description(text: str, lang: str = "zh") -> str:
-    """从 TL;DR 首条要点自动生成 meta description（≤160 字）。
+def _trim_to_sentence(s: str, limit: int) -> str:
+    """在 limit 内切断成「读得通」的摘要，三级兜底避免半句/断词。
 
-    TL;DR 已是 GEO 友好的「全局结论摘要」，复用其首条作搜索摘要零额外 token。
-    无 TL;DR 时兜底取首个正文段落前 150 字。
+    1) 句末标点（。！？.!?）→ 2) 次级断点（逗号/冒号/分号/顿号）→ 3) 单词边界。
+    用于 meta description：必须是一句读得通的搜索摘要，不能被 [:n] 截成半句
+    或断在单词中间（如英文长句 "...the"）。
     """
+    s = s.strip()
+    if len(s) <= limit:
+        return s
+    end = min(limit, len(s))
+    for i in range(end, 0, -1):
+        if s[i - 1] in "。！？.!?":
+            return s[:i].strip()
+    for i in range(end, 0, -1):
+        if s[i - 1] in ",;:，；：、":
+            return s[:i].strip()
+    sp = s.rfind(" ", 0, end)
+    if sp > 0:
+        return s[:sp].rstrip()
+    return s[:end].rstrip()
+
+
+def auto_description(text: str, lang: str = "zh") -> str:
+    """从 TL;DR 首条 / 已有 excerpt / 首个正文段落 生成 meta description（≤160 字）。
+
+    优先级：TL;DR 首条（零 token）→ 已生成的 excerpt（纯归纳，最适合作搜索摘要）
+    → 首个正文段落（按句切断，绝不半句）。无 TL;DR 时不再硬切首段前 150 字，
+    否则会出现「每一层的归属都」这种被 [:150] 截断的半句，损害 SEO 摘要。
+    """
+    _fm, body = extract_frontmatter(text)
     m = TLDR_BLOCK_RE.search(text)
     if m:
         for line in m.group(1).splitlines():
             s = line.strip()
             bm = TLDR_BULLET_RE.match(s)
             if bm:
-                return bm.group(1).strip()[:160]
-    _fm, body = extract_frontmatter(text)
+                return _trim_to_sentence(bm.group(1).strip(), 160)
+    if _fm:
+        m_ex = re.search(r'(?m)^excerpt:\s*"?([^"\n]*?)"?\s*$', _fm)
+        if m_ex:
+            ex = m_ex.group(1).strip()
+            if ex:
+                return _trim_to_sentence(ex, 160)
     paras = [p.strip() for p in body.split("\n\n") if p.strip() and not p.strip().startswith("#")]
     if paras:
-        return paras[0][:150]
+        return _trim_to_sentence(paras[0], 150)
     return ""
 
 

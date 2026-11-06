@@ -56,6 +56,16 @@ CREWAI_PSE_LEAK = {
 MIN_PROJECT_RELEVANCE = 8
 MAX_RANKED_SYMBOLS = 80
 
+# ── 论断—源码一致性闸门（2026-11-06）─────────────────────────────
+# 相关性闸门只保证「文章在讲这个项目」，verify_article 只保证「写出来的
+# 符号/路径真实存在」。二者都拦不住「把 README 描述性事实包装成虚构因果」：
+# 每个名词都真实、整段论证却站不住（resolve-lume 稿 37 分全绿即为此例）。
+# 下面四项是成品必须同时具备的可核查证据链，详见 pipeline/evidence.py。
+MIN_LINE_ANCHORS = 2          # 有效的 `path:line` 锚点（文件存在且行号不越界）
+MIN_REAL_SOURCE_BLOCKS = 1    # 逐字匹配真实源码的代码块（README/文档不算）
+MIN_REPRO_COMMANDS = 1        # 可复现命令（make target 必须真实存在）
+MAX_UNGROUNDED_CLAIMS = 2     # 允许少量无就近锚点的论断，超过即隔离
+
 # 夸大词汇表：关键词 → 说明（用于程序化兜底清理）
 EXAGGERATED_TERMS = {
     "断点恢复": "Trace 只用于审计和提取结论，不支持从断点恢复执行",

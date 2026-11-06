@@ -57,6 +57,7 @@ from pipeline.config import (  # noqa: E402
     STYLE_NAMES,
     STYLE_SPECS,
 )
+from pipeline.evidence import build_anchor_block, grounding_issue  # noqa: E402
 from pipeline.frontmatter import (  # noqa: E402
     clean_code_block_whitespace,
     fix_frontmatter_slug,
@@ -370,7 +371,8 @@ def _add_crew_usage(ctx: RunContext, crew) -> None:
 # ── Phase 2：写作 ──
 
 
-def phase2_write_sectioned(ctx: RunContext, excerpts_block: str) -> str:
+def phase2_write_sectioned(ctx: RunContext, excerpts_block: str,
+                           anchor_block: str = "") -> str:
     """逐节生成（F / G-K 风格）：程序硬控 H2 标题，杜绝模型自选章节标题。
 
     章节骨架由程序生成，模型只写每节正文，避免退化成通用架构模板。
@@ -405,6 +407,7 @@ def phase2_write_sectioned(ctx: RunContext, excerpts_block: str) -> str:
                 project_key=ctx.project_key,
                 desc=ctx.p["desc"],
                 repo=ctx.p["repo"],
+                anchor_block=anchor_block,
             ),
             expected_output=f"「{header}」一节的正文（无 H2 标题、无 Front Matter）",
             agent=writer_agent,
@@ -439,7 +442,8 @@ def phase2_write_sectioned(ctx: RunContext, excerpts_block: str) -> str:
     return body_text
 
 
-def phase2_write_full(ctx: RunContext, outline: str, excerpts_block: str) -> str:
+def phase2_write_full(ctx: RunContext, outline: str, excerpts_block: str,
+                      anchor_block: str = "") -> str:
     """单 Writer 全文生成（A-E 风格）：沿用 Planner 提纲的结构。"""
     style_instruction = prompts.build_style_instruction(
         ctx.style_override, prompts.build_spec_block(ctx.style_override), ctx.variant_note
@@ -457,6 +461,7 @@ def phase2_write_full(ctx: RunContext, outline: str, excerpts_block: str) -> str
             repo=ctx.p["repo"],
             style_instruction=style_instruction,
             style_extra_rule=prompts.style_extra(ctx.style_override),
+            anchor_block=anchor_block,
         ),
         expected_output="一篇完整的中文 Markdown 技术文章（从第一个标题开始，无 Front Matter）",
         agent=writer_agent,
@@ -490,12 +495,16 @@ def phase2_write(ctx: RunContext, outline: str) -> str:
     try:
         ctx.decision_line = extract_decision_line(outline, ctx.p["desc"])
         excerpts_block = build_excerpts_block(ctx.sandbox_dir, ctx.batches)
+        # 行号锚点与 make target 由程序从真实源码算出，Writer 只能挑引用、不能自编。
+        # 这是「论断—源码一致性」闸门的前半段（后半段在 main 里复核成品）。
+        anchor_block = build_anchor_block(ctx.sandbox_dir, ctx.batches)
+        print(f"🔖 源码证据锚点 {len(re.findall(r'`[^`]+`', anchor_block))} 条已注入 Writer")
 
         if ctx.style_override == "F" or ctx.style_override in STYLE_SPECS:
-            body_text = phase2_write_sectioned(ctx, excerpts_block)
+            body_text = phase2_write_sectioned(ctx, excerpts_block, anchor_block)
             title = ctx.decision_line or ctx.p["desc"]
         else:
-            body_text = phase2_write_full(ctx, outline, excerpts_block)
+            body_text = phase2_write_full(ctx, outline, excerpts_block, anchor_block)
             title = extract_title(outline) or extract_title(body_text) or ctx.p["desc"]
 
         cats = ", ".join(f'"{c}"' for c in project_categories(ctx.p))
@@ -547,6 +556,22 @@ def _relevance_issue(ctx: RunContext, article: str) -> str | None:
         base + "疑似写成通用架构议论文而非本项目（提示：正文中应具体指认本项目的"
         "源码文件与 API，例如 `tests/foo.spec.ts`、`streamChat`）"
     )
+
+
+def enforce_grounding(ctx: RunContext, article: str, phase: str) -> bool:
+    """论断—源码一致性硬闸：不达标即隔离，绝不保存中文 / 翻译 / 发布。
+
+    与 _relevance_issue 的分工：后者查「是不是在讲本项目」，这里查
+    「说出来的因果有没有源码依据」。phase 写进隔离原因，便于分辨证据是
+    写作阶段就没给，还是被 Phase 3 的修正删掉了。
+    """
+    issue = grounding_issue(article, ctx.source_dir)
+    if issue is None:
+        return True
+    print(f"\n❌ [{phase}] {issue}")
+    print("   文章不可发布。已隔离至 needs-review 目录，请按提示补源码证据后重跑。")
+    quarantine(article, ctx.slug_zh, f"[{phase}] {issue}")
+    return False
 
 
 def phase3_verify(ctx: RunContext, article: str) -> str | None:
@@ -832,12 +857,22 @@ def main():
         quarantine(article, ctx.slug_zh, "检测到思维链/内部独白泄漏（Thought:/Answer:/内容大纲 等）")
         return
 
+    # 论断—源码一致性（写作后立刻查）：缺的是证据而不是「写错的引用」，
+    # Phase 3 只会删除、不会补证据，早隔离可省掉最多 3 轮无效 LLM 修正。
+    if not enforce_grounding(ctx, article, "p2-write"):
+        return
+
     print(f"📊 CrewAI 主体: {ctx.prompt_tokens} 输入 + {ctx.completion_tokens} 输出")
 
     # ── Phase 3: 核查与修正 ──
     article = phase3_verify(ctx, article)
     if article is None:
         return  # 已隔离
+
+    # 最终形态复核：Phase 3 的 LLM 修正 / 程序化删改可能把 `path:line` 锚点、
+    # 真实源码块或 make 命令一并删掉。这里也覆盖骨架分支（:604）的唯一出口。
+    if not enforce_grounding(ctx, article, "p3-verified"):
+        return
     save_draft(ctx, article, "p3-verified")
 
     # ── Phase 4: 中文定稿 ──

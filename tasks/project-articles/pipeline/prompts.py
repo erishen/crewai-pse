@@ -12,6 +12,39 @@
 
 from pipeline.config import AUTHOR_FILE, STYLE_EXTRA_F, STYLE_NAMES, STYLE_SPECS
 
+# 论断—源码一致性（2026-11-06）。旧版只要求「引用真实符号」，模型于是把
+# README 的描述性事实包装成虚构物理约束：每个名词都真实，因果却是编的
+# （例：「镜像里没有 nginx」→「SSE 长连接导致不能用 nginx」）。
+# 规则必须与 pipeline/evidence.py 的确定性闸门一一对应，否则模型写得再好
+# 也会被隔离，或被隔离原因误导成「换个风格重跑」。
+GROUNDING_RULES = """
+## ⚠️ 论断—源码一致性（硬性，违反会被程序隔离，换风格重跑无效）
+1. 正文中每一处「不能 / 无法 / 必须 / 唯一 / 只能 / 决定了 / 之所以 / 直接原因 /
+   根本原因 / 物理约束 / 淘汰 / 别无选择」这类**因果或排他性论断**，句末必须紧跟一个
+   可核查锚点，格式严格为 `相对路径:行号`（例如 `frontend/src/api.ts:44`），
+   只能从下面「源码证据锚点」清单里挑，严禁自行编造路径或行号。
+2. 严禁把 README / 架构图里的**描述性事实**升级成排他性因果结论。
+   反例：「因为 SSE 是长连接，所以容器里不能用 nginx」—— README 只说「镜像内没有
+   nginx」，而项目里 nginx.conf 仍保留着 1800s 配置，这个因果不成立。
+   写「某技术做不到 / 必须用某技术」之前，必须在源码实现或注释里找到依据并给出锚点。
+3. 至少 1 个代码块**逐字摘录真实源码**（≥2 行，来自「真实源码片段」），
+   块前用 `path:line` 标注出处；架构图、伪代码、README 文本块都不算。
+4. 至少 1 个可复现命令，放进代码块，优先用「可复现命令」清单里的 `make <target>`；
+   不得编造项目里不存在的 target。
+5. 至少 2 个「非显而易见的亮点」必须来自**源码实现**（函数、常量、注释、配置行），
+   不能只是 README 技术栈表 / 端口表 / 架构图的复述；全文至少出现 2 个不同实现文件的行号锚点。
+"""
+
+# 逐节流（F / G-K 骨架）每节都注入完整规则太浪费 token，用同语义的精简版。
+GROUNDING_RULES_SECTION = """
+## ⚠️ 论断—源码一致性（本节硬性要求）
+1. 本节每处「不能/无法/必须/唯一/只能/决定了/之所以」类论断句末必须紧跟
+   `相对路径:行号`，只能从「源码证据锚点」清单里挑，不得自编。
+2. 严禁把 README 描述性事实升级成排他性因果（如「没有 nginx」→「不能用 nginx」）。
+3. 本节至少引用 1 个真实源码实现行；全文还须有逐字摘录源码的代码块与
+   Makefile 里真实存在的可复现命令（见「源码证据锚点 / 可复现命令」清单）。
+"""
+
 
 def author_block() -> str:
     """读取 author.md 生成人设注入块（文件缺失则为空串）。
@@ -89,12 +122,17 @@ def planner_description(desc: str, project_key: str, repo: str, highlights,
 4. 将推荐文件按主题相关性分成若干批次（每批不超过 5 个），标注每批对应的章节
 5. 提纲末尾附上"交付完成"
 6. 你规划的文章主题必须严格是本项目（{project_key}：{desc}，GitHub: {repo}）。绝对禁止规划任何关于 AI 写作框架、多 Agent 协作、验证机制、防幻觉、Planner/Specialist/Evaluator 角色等内容——那些不是本项目，不要把它们写进提纲。
+7. 提纲中每个因果 / 排他性论断（「不能 / 必须 / 唯一 / 决定了 / 之所以」）都要标注对应的
+   真实源码文件与行号锚点（如 `frontend/src/api.ts:44`）；另须规划至少 1 处「逐字摘录
+   真实源码」的代码块与 1 个 Makefile 里真实存在的可复现命令。严禁只按 README 的
+   技术栈表 / 端口表 / 架构图组织全文，至少 2 个亮点必须来自源码实现而非文档。
 {style_instruction}{style_extra_rule}"""
 
 
 def section_description(header: str, directive: str, decision_line: str, author: str,
                         excerpts_block: str, symbol_hint: str, variant_note: str,
-                        prev_text: str, project_key: str, desc: str, repo: str) -> str:
+                        prev_text: str, project_key: str, desc: str, repo: str,
+                        anchor_block: str = "") -> str:
     """Phase 2（逐节流）—— 单节 Writer 的任务描述。"""
     return f"""你是一名技术文章作者。基于【真实源码片段】和【核心工程决策线】，写文章「{header}」这一节的正文。
 
@@ -107,6 +145,8 @@ def section_description(header: str, directive: str, decision_line: str, author:
 
 ## 真实符号候选（优先引用，**非穷举**）
 {symbol_hint}
+
+{anchor_block}
 
 ## 本节要写的内容
 {directive}{variant_note}
@@ -122,13 +162,14 @@ def section_description(header: str, directive: str, decision_line: str, author:
 4. 不提及本地绝对路径、缓存目录、AI 写作框架、多 Agent、验证机制等内部信息。
 5. 只写本项目（{project_key}：{desc}，GitHub: {repo}）。本项目的技术栈、文件结构与
    核心实现必须能在正文里被具体指认；**严禁写成放之任何项目皆准的通用架构议论文**。
-
+{GROUNDING_RULES_SECTION}
 输出仅本节正文。"""
 
 
 def full_article_description(structure_rule: str, decision_line: str, author: str,
                              excerpts_block: str, project_key: str, desc: str, repo: str,
-                             style_instruction: str, style_extra_rule: str) -> str:
+                             style_instruction: str, style_extra_rule: str,
+                             anchor_block: str = "") -> str:
     """Phase 2（单 Writer 流）—— 全文一次性写作的任务描述（A-E 风格）。"""
     return f"""你是一名技术文章作者。根据下面提供的【真实源码片段】和【文章结构】，写一篇完整的中文技术文章。
 
@@ -142,6 +183,8 @@ def full_article_description(structure_rule: str, decision_line: str, author: st
 ## 真实源码片段（你只能引用这里出现的代码/符号，严禁编造任何函数/类/文件名）
 {excerpts_block}
 
+{anchor_block}
+
 ## 写作要求
 1. 直接从第一个标题开始输出，**不要写 Front Matter，不要保存到文件**，把整篇文章作为你的回答直接返回。
 2. 正文不以 H1（`#`）开头，用 `##` / `###` 组织章节。
@@ -150,7 +193,8 @@ def full_article_description(structure_rule: str, decision_line: str, author: st
 5. 在「源码导航」之后追加一个 FAQ 区块：用 `[faq]` 与 `[/faq]` 包裹 4-6 条问答，每条 `问：...` / `答：...` 各占一行（正文式短代码），内容须基于文章、严禁编造。
 6. 不提及本地绝对路径、缓存目录等内部信息。
 7. 你只写本项目（{project_key}：{desc}，GitHub: {repo}）。绝对禁止写任何关于 AI 写作框架、多 Agent、验证机制、防幻觉、或本写作管线本身的内容。
-
+8. 正文必须出现至少 2 个不同实现文件的 `path:line` 锚点，且因果/排他论断就近带锚点；否则程序会直接隔离，不会进入发布。
+{GROUNDING_RULES}
 {style_instruction}{style_extra_rule}"""
 
 
@@ -191,6 +235,8 @@ def fix_prompt(article: str, code_refs: list[str], exaggerations: list[str]) -> 
 2. 夸大词汇：删除包含该词汇的整句话，不要尝试改写
 3. 保持文章其余部分不变
 4. 输出修正后的完整文章（从 Front Matter 开始），不输出解释
+5. **严禁删除** `相对路径:行号` 锚点、逐字摘录真实源码的代码块、以及可复现命令；
+   这些是「论断—源码一致性」闸门的证据链，删掉会让整篇被隔离
 
 ## 当前文章
 {article}"""
