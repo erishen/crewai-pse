@@ -508,6 +508,70 @@ def _cached_symbols(source_dir_str: str) -> frozenset[str]:
     return frozenset(extract_real_symbols(Path(source_dir_str)))
 
 
+# ── 真实文件路径白名单（相关性评分的第三路证据） ──────────────────────
+# 只按「代码符号命中」评分会系统性误杀叙事型风格：A–E 习惯用文件路径
+# 指认项目，通篇中文散文、少有反引号包住的 API 名。11-06 alva-e2e 的
+# A 风格稿写了 tests/comps.spec.ts / tests/helpers/common.ts 两个真实文件，
+# 却因 symbol_hits=['comps'] 只得 5 分被隔离（阈值 8）——这是假阴性。
+# 白名单成员必须是真实存在的文件，虚构路径拿不到分，拦截力不下降。
+_PATH_SCAN_EXTS = (
+    "*.py", "*.md", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs",
+    "*.java", "*.kt", "*.go", "*.rs", "*.c", "*.h", "*.cpp", "*.cc",
+    "*.lume", "*.json", "*.yml", "*.yaml", "*.sh", "*.toml", "*.cfg",
+    "Makefile", "Dockerfile",
+)
+_PATH_SKIP_DIRS = _SKIP_DIRS + ("test-results", "dist", "coverage", ".next")
+# 末级文件名过于通用时不能作为项目绑定证据（否则任何文章写 README.md 都得分）
+_GENERIC_BASENAMES = {
+    "readme.md", "readme.zh.md", "readme.en.md", "package.json",
+    "package-lock.json", "tsconfig.json", "makefile", "dockerfile",
+    "index.ts", "index.js", "index.py", "__init__.py", "setup.py",
+    "pyproject.toml", "requirements.txt", "config.ts", "config.js",
+    "config.py", "main.ts", "main.py", "app.py", ".env.example",
+}
+_PATH_REF_RE = re.compile(r"[A-Za-z0-9_.@-]+(?:/[A-Za-z0-9_.@-]+)*")
+
+
+@lru_cache(maxsize=8)
+def _cached_paths(source_dir_str: str) -> frozenset[str]:
+    """项目里真实存在的相对路径（小写，含各级后缀形式）。
+
+    `tests/comps.spec.ts` 同时登记完整路径、省略顶层目录的后缀与末级
+    文件名，兼容文章的不同写法。根目录单文件（README.md / package.json）
+    与通用末级名不计入，避免任何项目都能白拿分。
+    """
+    root = Path(source_dir_str)
+    paths: set[str] = set()
+    for ext in _PATH_SCAN_EXTS:
+        for f in root.rglob(ext):
+            if any(skip in str(f) for skip in _PATH_SKIP_DIRS):
+                continue
+            try:
+                rel = f.relative_to(root).as_posix().lower()
+            except ValueError:
+                continue
+            parts = rel.split("/")
+            if len(parts) < 2:
+                continue
+            for i in range(len(parts)):
+                cand = "/".join(parts[i:])
+                if "/" not in cand and cand in _GENERIC_BASENAMES:
+                    continue
+                paths.add(cand)
+    return frozenset(paths)
+
+
+def _extract_path_refs(text: str) -> set[str]:
+    """提取文章里可能指向源码文件的路径引用；能否计分由白名单裁决。"""
+    out: set[str] = set()
+    for m in _PATH_REF_RE.finditer(text):
+        s = m.group(0).lower().strip("./").rstrip(".")
+        if ("/" not in s and "." not in s) or len(s) < 8 or len(s) > 160:
+            continue
+        out.add(s)
+    return out
+
+
 _DECL_RE = re.compile(
     r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?"
     r"(?:function|const|let|var|class|interface|def|func|macro)\s+"
@@ -550,6 +614,10 @@ def rank_real_symbols(source_dir: Path, limit: int = 80) -> list[str]:
     scored: list[tuple[int, str]] = []
     for s in symbols:
         if len(s) < 4 or s.startswith("_") or s in _SYMBOL_NOISE_LOWER:
+            continue
+        # 证据/截图文件常以 40 位 hash 命名，会被当成「可引用 API」挤占
+        # 白名单名额（alva-e2e 实测前 30 名里占了 2 个）。
+        if re.fullmatch(r"[0-9a-f]{16,}", s):
             continue
         # 全大写的是环境变量 / C 宏（LLM_API_KEY、CONTENT_LENGTH …），
         # 不是可引用的函数或类。注意 symbols 是小写集合，必须按原写法判断。
@@ -598,13 +666,18 @@ def project_relevance(text: str, project_key: str,
     """量化文章与目标项目的绑定程度，返回 (得分, 明细)。
 
     得分 = 项目名/词命中（每次 1 分，上限 5）+ 真实符号命中（每个 2 分，
-    上限 20）。这是「假阴性」闸门：verify_article 只查写出来的符号是否
-    真实（假阳性），而一篇零引用、零技术栈的通用议论文同样能全绿通过。
+    上限 20）+ 真实源码路径命中（每个 3 分，上限 12）。这是「假阴性」闸门：
+    verify_article 只查写出来的符号是否真实（假阳性），而一篇零引用、零
+    技术栈的通用议论文同样能全绿通过。
+
+    路径维度是给叙事型风格（A–E）补的：这类文章用 `tests/foo.spec.ts`
+    之类的真实文件指认项目，而不是罗列 API 名。三路证据都必须能在
+    目标项目里查到，虚构符号/虚构路径一律不加分。
 
     project_key / source_dir 缺失时返回哨兵高分（不拦截），以保持
     纯文本校验场景的向后兼容。
     """
-    detail: dict = {"name_hits": 0, "symbol_hits": [], "score": 0}
+    detail: dict = {"name_hits": 0, "symbol_hits": [], "path_hits": [], "score": 0}
     if not project_key or source_dir is None:
         detail["score"] = 999
         return 999, detail
@@ -623,7 +696,12 @@ def project_relevance(text: str, project_key: str,
     hits = sorted(r for r in refs if r and r in symbols)
     detail["symbol_hits"] = hits
 
-    score = min(5, name_hits) + min(20, len(hits) * 2)
+    paths = _cached_paths(str(source_dir))
+    path_hits = sorted(p for p in _extract_path_refs(text) if p in paths)
+    detail["path_hits"] = path_hits
+
+    score = (min(5, name_hits) + min(20, len(hits) * 2)
+             + min(12, len(path_hits) * 3))
     detail["score"] = score
     return score, detail
 

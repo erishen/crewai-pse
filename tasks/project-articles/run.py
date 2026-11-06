@@ -526,8 +526,11 @@ def _relevance_issue(ctx: RunContext, article: str) -> str | None:
     return (
         f"项目相关性不足（得分 {score} < {MIN_PROJECT_RELEVANCE}）："
         f"项目名命中 {detail['name_hits']} 次、真实符号命中 "
-        f"{len(detail['symbol_hits'])} 个 {detail['symbol_hits'][:6]}；"
-        "疑似写成通用架构议论文而非本项目"
+        f"{len(detail['symbol_hits'])} 个 {detail['symbol_hits'][:6]}、"
+        f"真实源码路径命中 {len(detail.get('path_hits', []))} 个 "
+        f"{detail.get('path_hits', [])[:6]}；"
+        "疑似写成通用架构议论文而非本项目（提示：正文中应具体指认本项目的"
+        "源码文件与 API，例如 `tests/foo.spec.ts`、`streamChat`）"
     )
 
 

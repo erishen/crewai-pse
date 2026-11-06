@@ -154,11 +154,13 @@ def test_rank_real_symbols_drops_noise_and_preserves_case():
            "const CONTENT_LENGTH = 4096;\n"
            "const a = 1;\nlet ab = 2;\n")
         _w(sd / "README.md", "server backend server backend streamChat\n")
+        _w(sd / "evidence" / "0d3b7f31f19f4eea4585f8e40b0b6be48f0f8d00.md", "screenshot\n")
         ranked = verify.rank_real_symbols(sd, 40)
-        # 真实声明保留原大小写，噪声（单双字母 / 下划线 / 全大写宏）全部剔除
+        # 真实声明保留原大小写，噪声（单双字母 / 下划线 / 全大写宏 / hash 文件名）全部剔除
         assert "streamChat" in ranked
         assert "readFrames" in ranked
         assert "CONTENT_LENGTH" not in ranked
+        assert "0d3b7f31f19f4eea4585f8e40b0b6be48f0f8d00" not in ranked
         assert all(not (s.startswith("_") or len(s) <= 2 or s.isupper()) for s in ranked)
 
 
@@ -204,3 +206,63 @@ def test_project_relevance_is_permissive_without_source():
     # 纯文本校验场景（无 project_key / source_dir）保持向后兼容，不能误拦
     assert verify.project_relevance("任意文字", "my-app", None)[0] == 999
     assert verify.project_relevance("任意文字", "", Path("/tmp"))[0] == 999
+
+
+def test_project_relevance_credits_real_source_paths():
+    """叙事型风格用真实文件路径指认项目，不能只按代码符号判跑题。
+
+    11-06 实测：alva-e2e 的 A 风格稿写了 tests/comps.spec.ts 与
+    tests/helpers/common.ts，却因 symbol_hits=['comps'] 只得 5 分被隔离。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "tests" / "comps.spec.ts", "test('comps', async () => {})")
+        _w(sd / "tests" / "helpers" / "common.ts", "export const loadDashboard = 1")
+        art = (
+            "## 结构\n\n"
+            "alva-e2e 把公共动作收进 `tests/helpers/common.ts`，"
+            "用例按验证对象拆到 `tests/comps.spec.ts`。"
+            "配置外置、公共逻辑收拢，spec 层只关心验证什么。\n\n"
+            "alva-e2e 的取舍说明。\n"
+        )
+        score, detail = verify.project_relevance(art, "alva-e2e", sd)
+        assert score >= MIN_PROJECT_RELEVANCE
+        assert "tests/comps.spec.ts" in detail["path_hits"]
+        assert "tests/helpers/common.ts" in detail["path_hits"]
+
+
+def test_project_relevance_ignores_fictional_paths():
+    """虚构路径不能拿分，否则闸门对幻觉稿形同虚设。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "src" / "real.ts", "export function realFn() {}")
+        art = (
+            "## 架构\n\nmy-app 的核心是 `src/makeJobId.ts` 与 "
+            "`src/registerJob.ts`，还有 `src/jobStore.ts`。"
+            + "这是一篇通用架构议论文。" * 20
+        )
+        score, detail = verify.project_relevance(art, "my-app", sd)
+        assert detail["path_hits"] == []
+        assert score < MIN_PROJECT_RELEVANCE
+
+
+def test_project_relevance_accepts_path_suffix_form():
+    """文章省略顶层目录（comps.spec.ts）也应命中真实文件。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "tests" / "comps.spec.ts", "test('x', () => {})")
+        art = "my-app 的用例集中在 `comps.spec.ts` 一个文件里。\n"
+        score, detail = verify.project_relevance(art, "my-app", sd)
+        assert "comps.spec.ts" in detail["path_hits"]
+        assert score >= 3
+
+
+def test_project_relevance_ignores_root_level_generic_files():
+    """README.md / package.json 太通用，不能作为项目绑定证据。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "README.md", "# my-app")
+        _w(sd / "package.json", "{}")
+        art = "参考 README.md 与 package.json 即可，my-app 用法很简单。\n"
+        _score, detail = verify.project_relevance(art, "my-app", sd)
+        assert detail["path_hits"] == []
