@@ -67,6 +67,7 @@ from pipeline.frontmatter import (  # noqa: E402
 )
 from pipeline.sanitize import (  # noqa: E402
     clean_section,
+    count_code_blocks,
     dedup_repeated_blocks,
     extract_title,
     has_reasoning_leak,
@@ -520,8 +521,22 @@ def phase3_verify(ctx: RunContext, article: str) -> str | None:
         # 章节由程序逐节生成，绝不能再交 LLM 整篇重写（会打回通用架构模板）。
         # 一律用确定性程序化删改修正虚构引用，保留骨架结构。
         if ctx.style_override == "F" or ctx.style_override in STYLE_SPECS:
+            blocks_before = count_code_blocks(article)
             article = strip_exaggerated(article)
             article = strip_fictional_refs(article, code_refs)
+            blocks_after = count_code_blocks(article)
+            # 证据链完整性：正常修正只删「行」，不删「块」。代码块被整块删掉，
+            # 说明该节的源码证据全是虚构的；正文里指向它的论述会变成无指代残句，
+            # 而二次核查因拿不到任何符号反而会绿灯。这种情况必须隔离重生成。
+            if blocks_after < blocks_before:
+                dropped = blocks_before - blocks_after
+                print(f"\n❌ 程序化修正删除了 {dropped} 个代码块：代码证据链已断，"
+                      "正文会残留无指代论述。文章不可发布，已隔离至 needs-review。")
+                quarantine(
+                    article, ctx.slug_zh,
+                    f"程序化修正删除了 {dropped} 个代码块，代码证据不完整，需重新生成",
+                )
+                return None
             fictitious, verified, _metrics = verify_article(article, ctx.source_dir)
             code_refs = [f for f in fictitious if not f.startswith("[夸大]")]
             if code_refs:

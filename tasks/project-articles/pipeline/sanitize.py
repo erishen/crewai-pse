@@ -23,6 +23,33 @@ from pipeline.config import (
 from pipeline.frontmatter import strip_outer_fence
 
 
+CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+
+
+def _code_block_body(block: str) -> str:
+    """剥掉首尾围栏行（含 ```js 这类语言标签）后剩下的真实代码内容。
+
+    `strip("`")` 只能去掉反引号，去不掉语言标签；判空必须先拆行剥围栏，
+    否则 ```js 空围栏会被误判成「内容是 js」。
+    """
+    lines = block.strip().split("\n")
+    if lines and lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def count_code_blocks(text: str) -> int:
+    """成品里的代码块数量，供核查阶段判断证据链是否被整块删除。"""
+    return len(CODE_BLOCK_RE.findall(text))
+
+
+def find_empty_code_blocks(text: str) -> list[str]:
+    """返回空 / 仅含语言标签的代码块——证据残缺，必须隔离而非发布。"""
+    return [b for b in CODE_BLOCK_RE.findall(text) if not _code_block_body(b)]
+
+
 def has_reasoning_leak(text: str) -> bool:
     """检测成品（含 front matter）是否混入了内部推理独白（Thought:/Answer:/内容大纲/关键发现 等）。"""
     if not text:
@@ -259,9 +286,12 @@ def strip_fictional_refs(text: str, refs: list[str]) -> str:
     for seg in segments:
         if seg.startswith("```") and seg.endswith("```"):
             cleaned = _clean_code_block(seg)
-            # 若代码块内容被清空（只剩围栏），丢弃整块
-            inner = cleaned.strip().strip("`").strip()
-            if not inner:
+            # 含虚构引用的行被删光后只剩围栏 + 语言标签（```js / ```python），
+            # 必须丢弃整块。旧写法 inner = cleaned.strip().strip("`").strip()
+            # 会把语言标签 "js" 当成有效内容，导致空代码块泄漏到成品，而正文里
+            # 指向这段代码的「这三个符号…」「这段代码可以被当作证据」等指代句
+            # 不含符号名、不会被同步删除，于是留下大量无指代残句。
+            if not _code_block_body(cleaned):
                 continue
             out.append(cleaned)
         else:

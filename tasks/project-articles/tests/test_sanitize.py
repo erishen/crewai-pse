@@ -85,6 +85,38 @@ def test_merge_drafts():
     assert "x" in merged and "y" in merged
 
 
+# ── 回归：K 风格「证据」章节的空代码块 ──
+# 事故：strip_fictional_refs 用 cleaned.strip().strip("`").strip() 判空，
+# ```js 空围栏剥完反引号后剩 "js" 被当成有效内容，空块泄漏到已发布文章，
+# 正文里「这三个符号…」等指代句同步残留。仅无语言标签的围栏才会被丢弃。
+def test_find_empty_code_blocks_detects_lang_tag_only():
+    assert len(sanitize.find_empty_code_blocks("```js\n```\n")) == 1
+    assert len(sanitize.find_empty_code_blocks("```python\n\n```\n")) == 1
+    assert sanitize.find_empty_code_blocks("```js\nconst x = 1;\n```\n") == []
+
+
+def test_strip_fictional_refs_drops_empty_fenced_block_with_lang_tag():
+    art = (
+        "前置论述\n\n"
+        "```js\n"
+        "const jobId = makeGhostJob(taskName);\n"
+        "```\n\n"
+        "后置论述\n"
+    )
+    out = sanitize.strip_fictional_refs(art, ["makeGhostJob", "jobId"])
+    assert "```" not in out, out
+    assert "前置论述" in out and "后置论述" in out
+    assert sanitize.count_code_blocks(out) == 0
+
+
+def test_strip_fictional_refs_keeps_partial_block():
+    art = "```js\nconst a = keepMe();\nconst b = makeGhostJob();\n```\n"
+    out = sanitize.strip_fictional_refs(art, ["makeGhostJob"])
+    assert "keepMe" in out
+    assert "makeGhostJob" not in out
+    assert sanitize.count_code_blocks(out) == 1
+
+
 def test_has_reasoning_leak():
     assert sanitize.has_reasoning_leak("Thought: let me think")
     assert not sanitize.has_reasoning_leak("普通正文没有思维链")

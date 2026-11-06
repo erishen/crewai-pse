@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from pipeline.config import EXAGGERATED_TERMS
-from pipeline.sanitize import has_reasoning_leak
+from pipeline.sanitize import find_empty_code_blocks, has_reasoning_leak
 
 # Python 关键字和内置名称，不应作为项目代码引用检查
 PYTHON_KEYWORDS = {
@@ -372,6 +372,18 @@ def verify_article(article: str, source_dir: Path) -> tuple[list[str], list[str]
     """
     refs = _extract_refs(article)
     fictitious, verified = _check_code_refs(refs, source_dir)
+
+    # ── 空代码块 / 证据残缺硬闸 ──
+    # 只查「文章里的符号是否真实存在」会漏掉反向失败：骨架风格（K 等）的
+    # 「证据」章节靠代码块承载真实源码，清洗把虚构引用删光后只剩 ```js 空围栏，
+    # 它不产生任何可核查符号 → refs 为空 → 旧逻辑判定「无虚构」而放行，
+    # 正文里「这三个符号…」「这段代码可以被当作证据」全部悬空。必须显式拦截。
+    empty_blocks = find_empty_code_blocks(article)
+    if empty_blocks:
+        fictitious.append(
+            f"[证据残缺] 发现 {len(empty_blocks)} 个空代码块（仅剩围栏/语言标签），"
+            "文章承诺的代码证据不存在，须重新生成而非发布"
+        )
 
     fictitious += _check_command_paths(article, source_dir)
 

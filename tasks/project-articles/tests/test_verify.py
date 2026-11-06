@@ -120,3 +120,23 @@ def test_check_code_refs_java_file_path_check():
         f, v = verify._check_code_refs({"./DockerSandboxExecutor.java"}, sd)
         assert any("文件存在" in x for x in v)
         assert f == []
+
+
+# ── 回归：空代码块不产生任何可核查符号，旧逻辑会误判「无虚构」而放行 ──
+def test_verify_article_flags_empty_code_block():
+    with tempfile.TemporaryDirectory() as td:
+        bad, _ok, _metrics = verify.verify_article(
+            "正文讨论架构。\n\n```js\n```\n\n这段代码可以被当作证据。\n", Path(td)
+        )
+        assert any("证据残缺" in x for x in bad)
+
+
+def test_verify_article_passes_real_code_block():
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "a.ts", "export function realFn() { return 1; }")
+        bad, _ok, _metrics = verify.verify_article(
+            "正文讨论 `realFn`。\n\n```ts\nexport function realFn() { return 1; }\n```\n", sd
+        )
+        assert not any("证据残缺" in x for x in bad)
+        assert bad == []
