@@ -276,4 +276,4 @@ All four share the **PSE role model** and a **verify→fix loop**, but differ in
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
