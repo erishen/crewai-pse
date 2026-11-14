@@ -48,7 +48,8 @@ from pipeline.blocks import (  # noqa: E402
     normalize_faq_blocks,
     normalize_tldr,
 )
-from pipeline.config import (  # noqa: E402
+from pipeline.config import (
+    MIN_LINE_ANCHORS,  # noqa: E402
     ARTICLES_DIR,
     CREWAI_PSE_LEAK,
     FIVE_PART_SPEC,
@@ -63,6 +64,7 @@ from pipeline.evidence import (  # noqa: E402
     build_anchor_block,
     claims_only_failure,
     grounding_issue,
+    line_anchors,
 )
 from pipeline.frontmatter import (  # noqa: E402
     clean_code_block_whitespace,
@@ -982,6 +984,29 @@ def main():
     if not article:
         print("❌ Specialist 未输出任何内容")
         sys.exit(1)
+
+    # 风格自带骨架 ≠ 证据自带位置：H/K 这类「假设/实验」风格实测会出现整篇 0 锚点
+    # （2026-11-14 第 4 遍：20 个代码块、0 个 `path:line`、21 条论断）。这不是写得
+    # 好坏的问题，是结构没给证据留位置，故换程序化强锚骨架（F 五段式）重写一次。
+    ok_anchors, _bad_anchors = line_anchors(article, ctx.source_dir)
+    if len(ok_anchors) < MIN_LINE_ANCHORS:
+        print(f"⚠️ 本轮正文仅 {len(ok_anchors)} 个有效锚点（需 ≥{MIN_LINE_ANCHORS}），"
+              "改用程序化骨架（F 五段式）重写一次…")
+        prev_style = ctx.style_override
+        ctx.style_override = "F"
+        try:
+            retry_article = phase2_write(ctx, outline)
+        finally:
+            ctx.style_override = prev_style
+        retry_article, retry_dropped = strip_empty_code_blocks(retry_article)
+        retry_ok, _ = line_anchors(retry_article, ctx.source_dir)
+        if retry_article and len(retry_ok) > len(ok_anchors):
+            article = retry_article
+            save_draft(ctx, article, "p2-body-retry")
+            print(f"   重写版锚点 {len(retry_ok)} 个，采用重写版"
+                  f"（清理空围栏 {retry_dropped} 个）→ drafts/{ctx.slug_zh}.p2-body-retry.md")
+        else:
+            print(f"   重写版仍只有 {len(retry_ok)} 个锚点，沿用首版继续闸门判定")
 
     # 有效性闸门：免费模型可能产出非文章（计划口吻 / 工具回显 / 过短）。
     # 此时绝不保存中文、绝不翻译（翻译拿到垃圾会凭空编造），直接隔离待复核。
