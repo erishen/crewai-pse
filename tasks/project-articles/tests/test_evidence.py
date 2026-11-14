@@ -333,3 +333,38 @@ def test_apply_grounding_repairs_delete_sentence():
     assert applied == 1
     assert "唯一的做法" not in fixed
     assert "\n\n\n" not in fixed
+
+
+def test_repair_target_tolerates_label_prefix_and_punctuation():
+    """模型把「原文」写成 `论断1：…`（漏句末标点）时仍要定位到同一句。
+
+    实跑出现 12 条补丁全部精确匹配失败、退回成本更高的全文形态，根因就是这个前缀。
+    """
+    art = "## 边界\n\n`cacheSet` 在超过上限时淘汰最老的一条。\n\n别的段落。\n"
+    fixed, applied, rejected = evidence.apply_grounding_repairs(
+        art, [("论断2：`cacheSet` 在超过上限时淘汰最老的一条",
+               "`cacheSet` 在超过上限时淘汰最老的一条（见 `src/cache.ts:9`）")])
+    assert applied == 1 and rejected == 0
+    assert "src/cache.ts:9" in fixed
+    assert "论断2" not in fixed
+    assert "。\n\n别的段落" in fixed  # 句末标点被保留
+
+
+def test_repair_target_does_not_touch_unrelated_sentence():
+    """相似度不足就宁可不改：绝不能在别的句子上动刀。"""
+    art = "## 边界\n\n登录页由引擎自己接管，不走 React 中继。\n"
+    fixed, applied, rejected = evidence.apply_grounding_repairs(
+        art, [("完全无关的另一句话，讲的是缓存淘汰策略与命中率",
+               "无关的改写句，也讲缓存（见 `src/a.ts:1`）")])
+    assert applied == 0 and rejected == 0
+    assert fixed == art
+
+
+def test_repair_rejects_anchor_glued_inside_a_word():
+    """模型把锚点插进词中间（`JS 模块` → `J（见 src:x）S 模块`）必须丢弃。"""
+    art = "## 边界\n\n不是能 `import` 进 Node 的 JS 模块，React 只能挂 socket。\n"
+    fixed, applied, rejected = evidence.apply_grounding_repairs(
+        art, [("不是能 `import` 进 Node 的 JS 模块",
+               "不是能 `import` 进 Node 的 J（见 `src/a.ts:3`）S 模块")])
+    assert applied == 0 and rejected == 1
+    assert fixed == art

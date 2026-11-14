@@ -416,6 +416,58 @@ def build_anchor_block(sandbox_dir: Path, batches: list, max_files: int = 8,
     )
 
 
+_REPAIR_LABEL_RE = re.compile(r"^\s*(?:论断|观点|第)?\s*\d+\s*[.、:：)）]\s*")
+_SENTENCE_RE = re.compile(r"[^。！？；\n]+[。！？；]?")
+
+
+def _repair_norm(s: str) -> str:
+    """补丁匹配用的归一化：去「论断N：」编号前缀、去空白、去句末标点。
+
+    2026-11-14 nsbp-lume 实跑：模型把每条「原文」都前缀成 `论断1：`…`论断5：`，还漏
+    掉句末的「。」，于是 12 条补丁全部精确匹配失败、退回成本更高的全文形态。归一化
+    后同句相似度 0.96-0.97，属于**同一句话**，不是模糊改写。
+    """
+    s = _REPAIR_LABEL_RE.sub("", (s or "").strip())
+    s = re.sub(r"\s+", "", s)
+    return s.rstrip("。．.，,；;：:！!？?")
+
+
+def _locate_repair_target(article: str, old: str) -> tuple[int, int, str] | None:
+    """在正文里定位补丁要替换的那一句；精确命中优先，其次句级归一化比对。"""
+    if old in article:
+        i = article.index(old)
+        return i, i + len(old), old
+    n_old = _repair_norm(old)
+    if len(n_old) < 8:
+        return None
+    best: tuple[float, int, int, str] | None = None
+    for m in _SENTENCE_RE.finditer(article):
+        seg = m.group(0)
+        n_seg = _repair_norm(seg)
+        if not n_seg:
+            continue
+        if n_seg == n_old:
+            return m.start(), m.end(), seg
+        ratio = difflib.SequenceMatcher(None, n_old, n_seg).ratio()
+        if ratio >= 0.85 and (best is None or ratio > best[0]):
+            best = (ratio, m.start(), m.end(), seg)
+    if best:
+        return best[1], best[2], best[3]
+    return None
+
+
+_ANCHOR_GLUE_RE = re.compile(r"[A-Za-z0-9]（见\s*`[^`]+`）[A-Za-z0-9]")
+
+
+def _with_terminal(new: str, seg: str) -> str:
+    """原句以句号/分号收尾时，改写句也要收尾，否则会粘成一长句。"""
+    new = new.strip()
+    end = seg.rstrip()[-1:] if seg.strip() else ""
+    if end in "。！？；" and not new.endswith(("。", "！", "？", "；")):
+        return new + end
+    return new
+
+
 def apply_grounding_repairs(article: str, pairs: list[tuple[str, str]]) -> tuple[str, int, int]:
     """按字符串精确替换回填补丁；找不到原句、或改动过大（换主题）的补丁一律丢弃。
 
@@ -427,16 +479,28 @@ def apply_grounding_repairs(article: str, pairs: list[tuple[str, str]]) -> tuple
     for old, new in pairs:
         old = old.strip()
         new = new.strip()
-        if not old or old not in article:
+        if not old:
             continue
+        target = _locate_repair_target(article, old)
+        if target is None:
+            continue
+        start, end, seg = target
         if new.upper().startswith("DELETE"):
-            article = article.replace(old, "", 1)
+            article = article[:start] + article[end:]
             applied += 1
             continue
-        if difflib.SequenceMatcher(None, old, new).ratio() < 0.45:
+        rewritten = _with_terminal(new, seg)
+        # 模型会把锚点插进词中间（实测把 `JS 模块` 改成 `J（见 src:x）S 模块`），
+        # 这种「补丁」语法上就不成立，宁可丢弃也不能写进正文。
+        if _ANCHOR_GLUE_RE.search(rewritten) and not _ANCHOR_GLUE_RE.search(seg):
             rejected += 1
             continue
-        article = article.replace(old, new, 1)
+        # 最小改动要比「正文里真正那句」，不是比模型复述的「原文」：模型会带
+        # `论断N：` 前缀、漏句末标点，拿它当基准会把正常补丁误判成换主题。
+        if difflib.SequenceMatcher(None, seg, rewritten).ratio() < 0.45:
+            rejected += 1
+            continue
+        article = article[:start] + rewritten + article[end:]
         applied += 1
     # 删句后可能留下多余空行
     article = re.sub(r"\n{3,}", "\n\n", article)
