@@ -74,6 +74,7 @@ from pipeline.sanitize import (  # noqa: E402
     dedup_repeated_blocks,
     extract_title,
     has_reasoning_leak,
+    has_tool_call_leak,
     is_valid_article,
     normalize_five_paragraph_headings,
     sanitize_frontmatter,
@@ -816,10 +817,38 @@ def main():
 
     # ── Phase 1: Planner 生成提纲 ──
     outline = phase1_plan(ctx)
+    save_draft(ctx, f"# 规划提纲\n\n{outline}\n", "p1-outline")
     ctx.batches = parse_batches(outline, source_dir)
+
+    # 提纲「工具调用泄漏」或「解析不出真实源文件」都说明 Planner 这轮没真正读到源码。
+    # 逐节写作是耗时大头（3–10 分钟），宁可多花一次 Planner 调用重试，也别在空素材
+    # 上写满全文——那样必然 0 锚点 / 0 源码块，被论断—源码一致性闸门整篇拒绝。
+    leak = has_tool_call_leak(outline)
+    no_files = not any(b.get("files") for b in ctx.batches)
+    if leak or no_files:
+        if leak:
+            print("⚠️ Planner 提纲里混入了未执行的工具调用（模型把 tool call 当文本返回，read_file 并未生效）")
+        print("🔁 提纲未能在真实源码上落地，重试一次 Planner…")
+        outline = phase1_plan(ctx)
+        save_draft(ctx, f"# 规划提纲（重试）\n\n{outline}\n", "p1-outline-retry")
+        ctx.batches = parse_batches(outline, source_dir)
+        leak = has_tool_call_leak(outline)
+        no_files = not any(b.get("files") for b in ctx.batches)
+
+    if no_files:
+        print("❌ Planner 两次都没能在提纲里落出真实源文件，证据池为空，已在 Phase 2 之前中止。")
+        print("   继续写作只会得到 0 锚点、0 源码块的稿件，必被闸门拒绝。")
+        print(f"   提纲已落盘: drafts/{ctx.slug_zh}.p1-outline.md"
+              f"（重试版: drafts/{ctx.slug_zh}.p1-outline-retry.md）")
+        sys.exit(1)
+
+    if leak:
+        # 重试后仍泄漏，但被抢救的 path 参数补出了文件：证据偏弱，放行但明确告知，
+        # 避免用户把后续闸门拒绝误读成「没按提示词补锚点」。
+        print("⚠️ Planner 重试后仍带工具调用泄漏，仅靠泄漏的 path 参数抢救出证据池，成稿证据可能偏弱")
+
     batch_summary = ", ".join(f"{len(b['files'])}个文件" for b in ctx.batches)
     print(f"📦 文件分 {len(ctx.batches)} 批: {batch_summary}")
-    save_draft(ctx, f"# 规划提纲\n\n{outline}\n", "p1-outline")
 
     # ── Phase 2: 写作 ──
     # 旧方案让 Specialist 同时读源码 + 写文章，模型把「让我先读取…」这类工具调用前的

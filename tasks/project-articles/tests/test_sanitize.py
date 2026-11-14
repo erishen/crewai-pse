@@ -125,3 +125,27 @@ def test_has_reasoning_leak():
 def test_strip_reasoning_leaks():
     out = sanitize.strip_reasoning_leaks("前言\nThought: 我应该先读源码\n正文继续")
     assert "Thought" not in out
+
+
+def test_dsml_title_blocked():
+    """原生 token 形态的工具调用（DeepSeek 的 `<｜｜ calls>`）不得成为标题。"""
+    assert _title_of(sanitize.sanitize_frontmatter(_art("title: <｜｜ calls>"), "FB")) == "FB"
+
+
+def test_dsml_invoke_title_blocked():
+    assert (
+        _title_of(
+            sanitize.sanitize_frontmatter(
+                _art('title: <｜｜ invoke name="read_file">'), "FB"
+            )
+        )
+        == "FB"
+    )
+
+
+def test_has_tool_call_leak():
+    """泄漏检测器：只认原生 token 形态，不误伤正文里对 read_file 的正常讨论。"""
+    assert sanitize.has_tool_call_leak('<｜｜ invoke name="read_file">')
+    assert sanitize.has_tool_call_leak("<｜｜ calls>")
+    assert not sanitize.has_tool_call_leak("正文讨论 read_file 工具的实现细节")
+    assert not sanitize.has_tool_call_leak("普通正文 <em>html</em> 也不是泄漏")

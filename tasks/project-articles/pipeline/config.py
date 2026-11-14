@@ -146,9 +146,18 @@ FM_VALUE_LEAK_RE = re.compile(
     r"|Observation\s*:\s*\S+"
     r"|Final\s+Answer\s*:\s*\S+"
     r"|(?:read|write|edit|delete|list|glob|grep|search|run)_(?:file|files|dir|dirs|code)\s*(?:\(.*)?"
+    r"|<[｜|].*"  # 原生 token 形态的工具调用（`title: <｜｜ calls>`），见 TOOL_CALL_LEAK_RE
     r")\s*$",
     re.IGNORECASE,
 )
+
+# 工具调用泄漏的**原生 token** 形态：部分模型（如 DeepSeek）在无法真正执行工具时，
+# 会把 tool call 直接写进 content，形如
+#   <｜｜ calls> / <｜｜ invoke name="read_file"> / <｜｜ parameter name="path">…
+# 与上面 ReAct 文本串（`Action: read_file`）不同，这里用 U+FF5C 全角竖线包裹标记，
+# 旧规则一条都匹配不上，于是坏标题能过 sanitize、坏提纲能一路进 Writer
+# （nsbp-lume 2026-11-14 就因此产出 0 锚点稿件）。
+TOOL_CALL_LEAK_RE = re.compile(r"<[｜|](?:[^<>]*[｜|]>)?")
 
 # 叙事风格字母 → 名称（用于 --style 强制指定）
 STYLE_NAMES = {

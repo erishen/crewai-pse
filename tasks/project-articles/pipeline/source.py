@@ -90,6 +90,29 @@ def parse_batches(outline: str, source_dir: Path) -> list[dict]:
                 return None
         return str(p)
 
+    def _resolve_ref(f: str) -> str | None:
+        """把任意形态的文件引用收敛成 source_dir 内的相对路径。
+
+        依次尝试：
+        1. 原样相对路径（`src/a.py`）；
+        2. 绝对路径相对化（落在 source_dir 内）；
+        3. **从右向左逐段裁剪**——覆盖提纲里常见的 `frameworks/<x>.py` 前缀，
+           以及模型照抄沙箱路径的情况（`.src_cache/<project>/Makefile`）。
+        都命中不了返回 None（该引用无法核对，跳过）。
+        """
+        raw = (f or "").strip().strip("\"'`")
+        if not raw:
+            return None
+        rel = _ref_rel(raw)
+        if rel is not None and ((source_dir / rel).exists() or _exists(rel)):
+            return rel
+        parts = Path(raw).parts
+        for i in range(1, len(parts)):
+            cand = str(Path(*parts[i:]))
+            if (source_dir / cand).exists() or _exists(cand):
+                return cand
+        return None
+
     for line in outline.split("\n"):
         stripped = line.strip()
         if "文件分批" in stripped:
@@ -107,10 +130,10 @@ def parse_batches(outline: str, source_dir: Path) -> list[dict]:
                 # 过滤出实际存在的文件
                 existing = []
                 for f in files:
-                    rel = _ref_rel(f)
+                    rel = _resolve_ref(f)
                     if rel is None:
                         continue
-                    if (source_dir / rel).exists() or _exists(rel):
+                    if rel not in existing:
                         existing.append(rel)
                 if existing:
                     batches.append({"files": existing, "sections": sections})
@@ -121,11 +144,19 @@ def parse_batches(outline: str, source_dir: Path) -> list[dict]:
     # 回退：从提纲中提取所有提到的文件路径，作为单批次
     all_files = set()
     for match in re.finditer(r"[\w/]+\.(?:py|ts|tsx|js|jsx|md|rs|toml|go|java|cpp|rb|sql|json|ya?ml)", outline):
-        f = match.group()
-        rel = _ref_rel(f)
-        if rel is None:
-            continue
-        if (source_dir / rel).exists() or _exists(rel):
+        rel = _resolve_ref(match.group())
+        if rel:
+            all_files.add(rel)
+    # 无扩展名的实现文件（Makefile / Dockerfile…）同样是证据主体，单独补一条
+    for match in re.finditer(r"\b(Makefile|Dockerfile(?:\.\w+)?|justfile|Procfile)\b", outline):
+        rel = _resolve_ref(match.group(1))
+        if rel:
+            all_files.add(rel)
+    # 抢救：Planner 把 read_file 工具调用当正文吐回时（`<｜｜ parameter name="path">…`），
+    # path 参数是它对源码唯一的真实指向——不提取的话证据池会是空的。
+    for match in re.finditer(r'parameter\s+name="path"[^>]*>([^<]+)', outline):
+        rel = _resolve_ref(match.group(1))
+        if rel:
             all_files.add(rel)
     if all_files:
         file_list = sorted(all_files)

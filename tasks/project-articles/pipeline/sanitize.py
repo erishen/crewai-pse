@@ -19,11 +19,22 @@ from pipeline.config import (
     PLAN_MARKERS,
     REASONING_LEAK_LINE_RE,
     REASONING_LEAK_MARKERS,
+    TOOL_CALL_LEAK_RE,
 )
 from pipeline.frontmatter import strip_outer_fence
 
 
 CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+
+
+def has_tool_call_leak(text: str) -> bool:
+    """文本里是否混入了**未被执行**的工具调用（原生 token 形态）。
+
+    命中说明模型把 tool call 当正文返回了，调用本身没有生效——Planner 提纲
+    一旦中招，后面解析不出任何源文件，Writer 只能在空证据池上写作，必然被
+    论断—源码一致性闸门拒绝。调用方应据此重试或直接中止，而不是继续跑 Phase 2。
+    """
+    return bool(TOOL_CALL_LEAK_RE.search(text or ""))
 
 
 def _code_block_body(block: str) -> str:
