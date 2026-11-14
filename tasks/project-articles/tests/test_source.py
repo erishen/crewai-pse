@@ -128,3 +128,32 @@ def test_parse_batches_fallback_single_batch():
         files = [f for b in res for f in b["files"]]
         assert "src/a.py" in files
         assert "src/b.py" in files
+
+
+def test_build_source_map_reports_real_symbols_and_line_numbers():
+    """源码地图必须给出真实符号 + 真实行号：Planner 据此挑文件，不可能编路径/编行号。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _w(sd / "README.md", "# Demo\n\n这是一段项目自我介绍。\n")
+        _w(sd / "Makefile", "dev:\n\tnpm run dev\n")
+        _w(sd / "src" / "core.py", "import os\n\n\nclass Engine:\n    pass\n")
+        _w(sd / "node_modules" / "pkg" / "i.js", "1")
+        _w(sd / "dist" / "bundle.js", "bundled")
+
+        m = source.build_source_map(sd)
+
+        assert "目录概览" in m
+        assert "src/core.py" in m
+        assert "L4 `class Engine`" in m, "符号行号必须来自真实文件（class Engine 在第 4 行）"
+        assert "Makefile" in m
+        assert "node_modules" not in m and "bundle.js" not in m, "依赖/产物目录不得进地图"
+
+
+def test_build_source_map_respects_char_budget():
+    """地图有字数上限，不能把整个仓库塞进提示词。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        for i in range(30):
+            _w(sd / "src" / f"m{i}.py", "\n".join(f"# line {j}" for j in range(200)))
+        m = source.build_source_map(sd, max_chars=3000)
+        assert len(m) < 5000

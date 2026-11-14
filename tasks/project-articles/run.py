@@ -83,7 +83,12 @@ from pipeline.sanitize import (  # noqa: E402
     strip_planning_remnants,
 )
 from pipeline.seo import auto_description, generate_excerpt, inject_series_links  # noqa: E402
-from pipeline.source import load_projects, parse_batches, src_mirror  # noqa: E402
+from pipeline.source import (  # noqa: E402
+    build_source_map,
+    load_projects,
+    parse_batches,
+    src_mirror,
+)
 from pipeline.styles import pick_style, pick_variants, record_style  # noqa: E402
 from pipeline.translate import translate  # noqa: E402
 from pipeline.verify import (  # noqa: E402
@@ -263,21 +268,27 @@ def resolve_zh_path(slug: str, slug_zh: str) -> Path | None:
 # ── Phase 1：Planner 提纲 ──
 
 
-def phase1_plan(ctx: RunContext) -> str:
-    """Planner 读源码 → 输出提纲（含叙事风格与文件分批）。"""
+def phase1_plan(ctx: RunContext, source_map: str) -> str:
+    """Planner 依据「源码地图」输出提纲（含叙事风格与文件分批）。
+
+    源码由程序预读（build_source_map）后注入任务描述，Planner **不持任何工具**：
+    部分 provider 会把未执行的 tool call 当正文吐回，一旦 Planner 能调用 read_file，
+    就会出现「模型以为读了源码、实际证据池为空」的静默失败。摘掉工具后这条路不可达，
+    且模型看到的每一行、每个行号都是真实的。
+    """
     spec_block = prompts.build_spec_block(ctx.style_override)
     style_instruction = prompts.build_style_instruction(
         ctx.style_override, spec_block, ctx.variant_note
     )
     print(f"🚀 Phase 1: Planner 规划 {ctx.p['desc']} 的文章提纲...")
-    crew = create_crew(task="project-articles")
+    crew = create_crew(task="project-articles", planner_tools=False)
     planner_task = Task(
         description=prompts.planner_description(
             desc=ctx.p["desc"],
             project_key=ctx.project_key,
             repo=ctx.p["repo"],
             highlights=ctx.p["highlights"],
-            sandbox_dir=ctx.sandbox_dir,
+            source_map_block=source_map,
             style_instruction=style_instruction,
             style_extra_rule=prompts.style_extra(ctx.style_override),
         ),
@@ -816,7 +827,12 @@ def main():
     ctx.variant_note = prompts.build_variant_note(hook, person, timeline)
 
     # ── Phase 1: Planner 生成提纲 ──
-    outline = phase1_plan(ctx)
+    # 源码地图由程序读取生成（含真实符号行号），Planner 只负责挑文件与编排结构，
+    # 因此不再持有 read_file/run_bash——见 phase1_plan 的说明。
+    source_map = build_source_map(sandbox_dir)
+    print(f"🗺️ 源码地图已生成（{len(source_map)} 字，程序读取，Planner 不持工具）")
+
+    outline = phase1_plan(ctx, source_map)
     save_draft(ctx, f"# 规划提纲\n\n{outline}\n", "p1-outline")
     ctx.batches = parse_batches(outline, source_dir)
 
@@ -829,7 +845,7 @@ def main():
         if leak:
             print("⚠️ Planner 提纲里混入了未执行的工具调用（模型把 tool call 当文本返回，read_file 并未生效）")
         print("🔁 提纲未能在真实源码上落地，重试一次 Planner…")
-        outline = phase1_plan(ctx)
+        outline = phase1_plan(ctx, source_map)
         save_draft(ctx, f"# 规划提纲（重试）\n\n{outline}\n", "p1-outline-retry")
         ctx.batches = parse_batches(outline, source_dir)
         leak = has_tool_call_leak(outline)

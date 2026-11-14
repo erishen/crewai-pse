@@ -168,6 +168,174 @@ def parse_batches(outline: str, source_dir: Path) -> list[dict]:
     return [{"files": [], "sections": ""}]
 
 
+# ── 源码地图：让 Planner「看得见源码」但**不持有任何工具** ─────────────────────
+# 起因：Planner 挂了 read_file（甚至 run_bash），而部分 provider 会把工具调用原样
+# 写进 content、调用根本不执行——nsbp-lume 2026-11-14 就是靠一条未执行的
+# `<｜｜ invoke name="read_file">` 编排了整篇提纲，证据池为空。
+# 改为程序读文件、只把「目录结构 + 文件头 + 真实符号行号」交给模型：证据链的行号
+# 由程序计算，模型不再有机会把工具调用当正文吐出来。
+
+# 目录概览/文件枚举时跳过的目录（构建产物与依赖树，对规划无价值）
+_MAP_SKIP_DIRS = {
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env", "__pycache__",
+    ".next", "dist", "build", "out", "target", "models", "coverage", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".src_cache", ".backup", ".idea", ".vscode", "vendor",
+}
+
+# 规划时信息密度最高的文件：优先出现在地图里
+_MAP_SIGNAL_FILES = (
+    "Makefile", "docker-compose.yml", "docker-compose.yaml", "pyproject.toml",
+    "package.json", "Cargo.toml", "go.mod", "requirements.txt",
+)
+
+_MAP_CODE_EXT = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java", ".kt", ".c", ".cc",
+    ".cpp", ".h", ".hpp", ".rb", ".php", ".cs", ".swift", ".vue", ".svelte",
+    ".sql", ".sh", ".lua", ".dart", ".scala", ".ex", ".exs",
+}
+
+# 符号行：类/函数/顶层常量声明。抓到的是**真实行号**，可直接作为锚点候选。
+_MAP_SYMBOL_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:"
+    r"def\s+\w"
+    r"|class\s+\w"
+    r"|function\s+\w+\s*\("
+    r"|fn\s+\w"
+    r"|func\s+\w"
+    r"|impl\b"
+    r"|struct\s+\w"
+    r"|enum\s+\w"
+    r"|interface\s+\w"
+    r"|type\s+\w"          # TS 的 `type X = …`；必须带名字，否则 `type: h[1],` 这类对象字段会混进来
+    r"|const\s+\w"
+    r"|let\s+\w"
+    r"|var\s+\w"
+    r"|module\.exports\b"
+    r")"
+)
+
+# 常/变量声明：只作补位，不能挤掉真正的类型与函数声明
+_MAP_SYMBOL_MINOR_RE = re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\b")
+
+
+def _iter_map_files(root: Path) -> list[Path]:
+    """枚举可进地图的文件（相对路径、已剔除依赖/产物目录）。"""
+    out: list[Path] = []
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if any(part in _MAP_SKIP_DIRS or part.startswith(".") for part in rel.parts[:-1]):
+            continue
+        out.append(rel)
+    return out
+
+
+def _map_symbols(path: Path, limit: int = 10) -> list[str]:
+    """抽取文件的符号声明行（含真实行号），失败则返回空。
+
+    优先收录类型/函数级声明（class/def/function/impl…），常量只用来补位——
+    否则一个文件前几行全是 `const XXX = 1`，真正的实现函数就被挤出地图了。
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    major: list[str] = []
+    minor: list[str] = []
+    for no, line in enumerate(text.splitlines(), start=1):
+        if len(line) > 200 or not _MAP_SYMBOL_RE.match(line):
+            continue
+        rendered = f"L{no} `{line.strip().rstrip(':{').strip()[:110]}`"
+        if _MAP_SYMBOL_MINOR_RE.match(line):
+            minor.append(rendered)
+        else:
+            major.append(rendered)
+    return (major + minor)[:limit]
+
+
+def _map_head(path: Path, head_lines: int = 6) -> str:
+    """文件开头若干行（判断文件用途的抓手），超长行截断。"""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    lines = text.splitlines()[:head_lines]
+    return "\n".join(ln[:120] for ln in lines)
+
+
+def build_source_map(root: Path, max_files: int = 30, head_lines: int = 6,
+                     max_chars: int = 14000) -> str:
+    """生成喂给 Planner 的「源码地图」：目录概览 + README 摘要 + 文件头与符号行号。
+
+    为什么要这个：Planner 一旦持有 read_file/run_bash，遇到不支持原生工具调用的
+    provider 就会把 tool call 当正文吐回来（调用未执行 → 证据池为空 → Writer 在
+    零素材上写作 → 必然被论断—源码一致性闸门拒绝）。改成程序读文件后，模型看到的
+    每一行都真实存在，连行号都是程序算出来的，不会再出现自编路径/自编行号。
+    """
+    files = _iter_map_files(root)
+
+    # 目录概览：顶层目录的文件计数，给模型一个整体结构感
+    top_counts: dict[str, int] = {}
+    for rel in files:
+        top = rel.parts[0] if len(rel.parts) > 1 else "(根目录)"
+        top_counts[top] = top_counts.get(top, 0) + 1
+
+    parts: list[str] = ["## 源码地图（由程序读取真实文件生成，你无需也不得调用任何工具）", ""]
+    if top_counts:
+        overview = "、".join(
+            f"{k}（{v} 个文件）"
+            for k, v in sorted(top_counts.items(), key=lambda kv: -kv[1])[:12]
+        )
+        parts.append(f"### 目录概览\n{overview}\n")
+
+    # README 摘要：项目的自我描述，规划时的第一手材料
+    for name in ("README.md", "README.zh.md", "README.zh-CN.md", "README.rst", "README.txt"):
+        f = root / name
+        if f.exists():
+            head = _map_head(f, head_lines=40)[:1200]
+            if head.strip():
+                parts.append(f"### {name}（开头片段）\n```md\n{head}\n```\n")
+            break
+
+    # 待收录文件：信号文件优先 → 代码文件按体积降序（大文件通常是实现主体）
+    def _rank(rel: Path) -> tuple:
+        name = rel.name
+        is_signal = name in _MAP_SIGNAL_FILES or name.startswith("Dockerfile")
+        is_readme = name.lower().startswith("readme")
+        code = rel.suffix.lower() in _MAP_CODE_EXT
+        try:
+            size = (root / rel).stat().st_size
+        except OSError:
+            size = 0
+        return (0 if is_signal else 1 if code else 2 if is_readme else 3, -size, str(rel))
+
+    picked = [rel for rel in sorted(files, key=_rank) if not rel.name.lower().startswith("readme")][:max_files]
+
+    parts.append("### 文件清单（含真实符号与行号；提纲要引用的文件只能从这里挑）")
+    used = sum(len(p) for p in parts)
+    for rel in picked:
+        if used >= max_chars:
+            parts.append(f"…（其余 {len(files) - len(picked)} 个文件未展开）")
+            break
+        path = root / rel
+        try:
+            total = len(path.read_text(encoding="utf-8", errors="ignore").splitlines())
+        except OSError:
+            continue
+        block = [f"#### `{rel}`（{total} 行）"]
+        syms = _map_symbols(path)
+        if syms:
+            block.append("符号：\n" + "\n".join(f"- {s}" for s in syms))
+        head = _map_head(path, head_lines=head_lines)
+        if head.strip():
+            block.append("开头片段：\n```\n" + head + "\n```")
+        text = "\n".join(block) + "\n"
+        parts.append(text)
+        used += len(text)
+    return "\n".join(parts)
+
+
 def load_projects() -> dict:
     """加载待写队列（projects.json）与已发布清单（projects-published.json）合并后的项目表。
 

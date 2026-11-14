@@ -106,27 +106,39 @@ def style_extra(style_override: str) -> str:
 
 
 def planner_description(desc: str, project_key: str, repo: str, highlights,
-                        sandbox_dir, style_instruction: str, style_extra_rule: str) -> str:
-    """Phase 1 —— Planner 生成提纲的任务描述。"""
+                        source_map_block: str, style_instruction: str,
+                        style_extra_rule: str) -> str:
+    """Phase 1 —— Planner 生成提纲的任务描述。
+
+    源码不再由模型自己用 read_file 读：程序预读后以「源码地图」注入（含真实符号行号）。
+    这样既不可能出现「工具调用被当正文吐回、调用未执行」的空证据池，
+    也不再有自编文件路径 / 自编行号的空间。
+    """
     return f"""撰写 {desc}（{project_key}）的中文技术文章。
 
 ## 项目信息
 - GitHub: {repo}
 - 核心卖点: {highlights}
-- 源码目录: {sandbox_dir}（这是该项目的仓库根目录，仅供 read_file 读取；文章中引用文件路径请用相对此目录的路径，如 `src/langgraph_pse/graph.py`，不要暴露此目录本身，也不要带 frameworks/ 前缀）
 
 ## 你的任务
-1. 用 read_file 读取源码目录下的关键文件（README.md + 核心 .py 文件）——**必须先读真实源码，再规划**
+1. 阅读下方【源码地图】——它是程序直接读取该项目的真实文件生成的，含目录结构、
+   关键文件的开头片段与**真实符号行号**。你**没有任何文件工具**：不得调用
+   read_file / run_bash，也不得在输出里出现任何工具调用标记（如 `Action:`、`<｜｜ … ｜｜>`）。
+   需要的信息全在源码地图里；地图里没有的文件，就不要在提纲里引用。
 2. 分析项目特点，从 6 种叙事风格中选择最合适的一种（问题驱动/设计决策/实战场景/架构漫游/对比分析/工程实践）
-3. 基于源码提炼 2-3 个非显而易见的亮点，按选定风格组织提纲
-4. 将推荐文件按主题相关性分成若干批次（每批不超过 5 个），标注每批对应的章节
+3. 基于源码地图提炼 2-3 个非显而易见的亮点，按选定风格组织提纲
+4. 将推荐文件按主题相关性分成若干批次（每批不超过 5 个），标注每批对应的章节；
+   批次里的文件路径必须**逐字取自源码地图的 `#### 路径` 标题**，使用相对仓库根的路径
+   （如 `src/langgraph_pse/graph.py`），不带任何绝对路径前缀，也不要带 frameworks/ 前缀
 5. 提纲末尾附上"交付完成"
 6. 你规划的文章主题必须严格是本项目（{project_key}：{desc}，GitHub: {repo}）。绝对禁止规划任何关于 AI 写作框架、多 Agent 协作、验证机制、防幻觉、Planner/Specialist/Evaluator 角色等内容——那些不是本项目，不要把它们写进提纲。
 7. 提纲中每个因果 / 排他性论断（「不能 / 必须 / 唯一 / 决定了 / 之所以」）都要标注对应的
-   真实源码文件与行号锚点（如 `frontend/src/api.ts:44`）；另须规划至少 1 处「逐字摘录
+   真实源码文件路径（如 `frontend/src/api.ts`），**不要写行号**——行号由程序按真实文件
+   计算后注入写作环节，自编行号会与真实锚点冲突。另须规划至少 1 处「逐字摘录
    真实源码」的代码块与 1 个 Makefile 里真实存在的可复现命令。严禁只按 README 的
    技术栈表 / 端口表 / 架构图组织全文，至少 2 个亮点必须来自源码实现而非文档。
-{style_instruction}{style_extra_rule}"""
+{style_instruction}{style_extra_rule}
+{source_map_block}"""
 
 
 def section_description(header: str, directive: str, decision_line: str, author: str,

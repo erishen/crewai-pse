@@ -72,13 +72,20 @@ def _create_llm() -> LLM:
     )
 
 
-def create_planner(task: str | None = None) -> Agent:
+def create_planner(task: str | None = None, use_tools: bool = True) -> Agent:
+    """Planner Agent。
+
+    `use_tools=False` 用于「源码由程序读、模型只看地图」的任务（project-articles）：
+    部分 provider 不支持原生工具调用，会把 `<｜｜ invoke name="read_file">` 原样写进
+    content，调用根本不执行，模型却据此编排整篇提纲 → 证据池为空、成稿 0 锚点。
+    摘掉 read_file/run_bash 后这条路物理上不可达；`run_bash` 本来也不该给规划角色。
+    """
     return Agent(
         role="Planner",
         goal="规划任务结构、委托执行、根据验证结果决策交付",
         backstory=load_prompt("planner", task),
         llm=_create_llm(),
-        tools=[read_file, run_bash],
+        tools=[read_file, run_bash] if use_tools else [],
         verbose=True,
     )
 
@@ -124,16 +131,23 @@ def create_writer(task: str | None = None) -> Agent:
     )
 
 
-def create_crew(task: str | None = None) -> Crew:
+def create_crew(task: str | None = None, planner_tools: bool = True) -> Crew:
     """创建 PSE 三角色 Crew（Sequential 流程）。
 
     当前流程：Planner(提纲) → Specialist(展开)。
     Evaluator 已创建但不在 Sequential 流程中分配任务 —
     文章验证由 run.py 中的 _verify_article() 程序化完成（grep 源码 + 夸大词检查），
     比 LLM 评估更可靠。保留 Evaluator 以便未来扩展（如切换到 Hierarchical 流程）。
+
+    `planner_tools=False`：Planner 不持任何工具，源码由调用方程序读取后以「源码地图」
+    形式注入任务描述（见 project-articles/pipeline/source.build_source_map）。
     """
     return Crew(
-        agents=[create_planner(task), create_specialist(task), create_evaluator(task)],
+        agents=[
+            create_planner(task, use_tools=planner_tools),
+            create_specialist(task),
+            create_evaluator(task),
+        ],
         process=Process.sequential,
         verbose=True,
     )
