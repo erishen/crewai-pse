@@ -208,12 +208,28 @@ def _extract_refs(article: str) -> set[str]:
     return refs
 
 
+# 英文常用词：正文里被反引号包起来时会被当成「代码符号」，逐个 grep 必然失败。
+# 2026-11-14 nsbp-lume 实跑把 `called` / `during` 判成了虚构符号。
+_REF_STOPWORDS = {
+    "called", "during", "before", "after", "while", "when", "where", "which",
+    "that", "this", "these", "those", "there", "their", "with", "without",
+    "from", "into", "onto", "over", "under", "about", "between", "through",
+    "because", "also", "only", "just", "then", "than", "more", "most",
+    "such", "same", "other", "another", "each", "every", "some", "any",
+    "both", "either", "neither", "once", "twice", "here", "why", "how",
+    "what", "who", "whom", "whose", "yes", "not", "and", "or", "but",
+    "if", "else", "via", "per", "the", "for", "you", "your", "our",
+}
+
+
 def _check_code_refs(refs: set[str], source_dir: Path):
     """逐个符号核查：文件路径递归搜磁盘，类名/函数名 grep 源码。"""
     fictitious: list[str] = []
     verified: list[str] = []
     for ref in sorted(refs):
         if len(ref) < 3 or ref.startswith("http"):
+            continue
+        if ref.lower() in _REF_STOPWORDS:
             continue
         if ref in BUILTIN_KEYWORDS:
             continue

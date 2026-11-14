@@ -83,6 +83,7 @@ from pipeline.sanitize import (  # noqa: E402
     is_valid_article,
     normalize_five_paragraph_headings,
     sanitize_frontmatter,
+    strip_empty_code_blocks,
     strip_exaggerated,
     strip_fictional_refs,
     strip_planning_remnants,
@@ -960,6 +961,11 @@ def main():
     # ② Writer Agent 不带任何文件工具（create_writer, tools=[]），物理上无法 read_file；
     # ③ 五段式骨架由程序生成，强制章节结构，不依赖模型自发遵守。
     article = phase2_write(ctx, outline)
+    # 空代码围栏必须在落盘前清掉：留到核查轮再删，会把「文章有代码块」这层证据
+    # 一并抹掉，校验随即判「代码证据链已断」而隔离整篇（2026-11-14 实跑命中）。
+    article, dropped_blocks = strip_empty_code_blocks(article)
+    if dropped_blocks:
+        print(f"🧹 已清理 {dropped_blocks} 个空代码围栏（只剩 ``` 和语言标签，属假证据）")
     # Phase 2 是耗时大头（逐节 LLM 写作），先落盘正文，避免被超时墙杀掉后整轮白做
     save_draft(ctx, article, "p2-body")
 

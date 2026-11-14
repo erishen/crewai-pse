@@ -15,6 +15,7 @@ import re
 from pipeline.config import (
     EXAGGERATED_TERMS,
     FIVE_SECTIONS,
+    FM_STYLE_LEAK_RE,
     FM_VALUE_LEAK_RE,
     PLAN_MARKERS,
     REASONING_LEAK_LINE_RE,
@@ -59,6 +60,27 @@ def count_code_blocks(text: str) -> int:
 def find_empty_code_blocks(text: str) -> list[str]:
     """返回空 / 仅含语言标签的代码块——证据残缺，必须隔离而非发布。"""
     return [b for b in CODE_BLOCK_RE.findall(text) if not _code_block_body(b)]
+
+
+def strip_empty_code_blocks(text: str) -> tuple[str, int]:
+    """删除只剩围栏/语言标签的空代码块，返回 (清理后文本, 删除个数)。
+
+    空围栏是「假证据」：读者看到 ``` 却没有代码，校验也会判证据残缺。必须在
+    Phase 2 落盘前就清掉——留到核查轮再删，会把「文章有代码块」这层证据一并抹掉
+    （2026-11-14 nsbp-lume 实跑：3 个空 ```bash 被核查删掉，校验随即报
+    「删除了 3 个代码块：代码证据链已断」而隔离整篇）。
+    """
+    removed = 0
+
+    def _drop(match: re.Match[str]) -> str:
+        nonlocal removed
+        if _code_block_body(match.group(0)):
+            return match.group(0)
+        removed += 1
+        return ""
+
+    out = CODE_BLOCK_RE.sub(_drop, text)
+    return re.sub(r"\n{3,}", "\n\n", out), removed
 
 
 def has_reasoning_leak(text: str) -> bool:
@@ -108,7 +130,8 @@ def sanitize_frontmatter(article: str, desc_fallback: str = "") -> str:
             val = ln.split(":", 1)[1].strip().strip('"').strip("'")
             # 1) ReAct 工具调用串（Action: read_file / read_file(...) 等）
             # 2) 常规思维链标记（Thought:/I need to/内容大纲…）
-            if FM_VALUE_LEAK_RE.match(val) or any(mk in val for mk in REASONING_LEAK_MARKERS):
+            if (FM_VALUE_LEAK_RE.match(val) or FM_STYLE_LEAK_RE.search(val)
+                    or any(mk in val for mk in REASONING_LEAK_MARKERS)):
                 cleaned.append(f"title: {title_fallback(article, desc_fallback)}")
                 continue
             # 3) 第一人称 + 意图动词（I will read / We should check…）：典型思考过程泄漏。
@@ -129,7 +152,8 @@ def sanitize_frontmatter(article: str, desc_fallback: str = "") -> str:
                 continue
         if low.startswith("description:"):
             val = ln.split(":", 1)[1].strip().strip('"').strip("'")
-            if FM_VALUE_LEAK_RE.match(val) or any(mk in val for mk in REASONING_LEAK_MARKERS):
+            if (FM_VALUE_LEAK_RE.match(val) or FM_STYLE_LEAK_RE.search(val)
+                    or any(mk in val for mk in REASONING_LEAK_MARKERS)):
                 continue  # 删除整行，后续自动注入干净 description
         cleaned.append(ln)
     new_fm = "\n".join(cleaned)

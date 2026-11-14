@@ -149,3 +149,31 @@ def test_has_tool_call_leak():
     assert sanitize.has_tool_call_leak("<｜｜ calls>")
     assert not sanitize.has_tool_call_leak("正文讨论 read_file 工具的实现细节")
     assert not sanitize.has_tool_call_leak("普通正文 <em>html</em> 也不是泄漏")
+
+
+def test_strip_empty_code_blocks_removes_fence_only_blocks():
+    """只剩 ```lang 的空围栏是假证据：必须在落盘前删掉，而不是留到核查轮再删。"""
+    art = (
+        "## 落地\n\n先看启动入口：\n\n```bash\n```\n\n"
+        "真实片段如下：\n\n```js\nconst port = 3000;\n```\n"
+    )
+    out, removed = sanitize.strip_empty_code_blocks(art)
+    assert removed == 1
+    assert "```bash" not in out
+    assert "const port = 3000;" in out
+    assert "\n\n\n" not in out
+
+
+def test_style_instruction_not_used_as_title():
+    """Writer 会把「按要求强制」的风格说明抄进标题，必须回落成正常标题。"""
+    art = (
+        "---\n"
+        "title: **H. 数据/评测驱动型**（按要求强制）。\n"
+        "description: 从源码出发复盘 nsbp-lume 的 SSR 中继决策。\n"
+        "---\n\n"
+        "## 待证假设\n\n正文。\n"
+    )
+    out = sanitize.sanitize_frontmatter(art, desc_fallback="nsbp-lume 的演进")
+    title = re.search(r"^title:\s*(.*)$", out, re.M).group(1)
+    assert "按要求强制" not in title
+    assert "评测驱动型" not in title

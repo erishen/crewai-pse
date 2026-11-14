@@ -299,3 +299,13 @@ def test_project_relevance_ignores_root_level_generic_files():
         art = "参考 README.md 与 package.json 即可，my-app 用法很简单。\n"
         _score, detail = verify.project_relevance(art, "my-app", sd)
         assert detail["path_hits"] == []
+
+
+def test_english_stopwords_are_not_fictitious_symbols():
+    """正文反引号里的英文常用词（called/during）不该被当成虚构代码符号。"""
+    with tempfile.TemporaryDirectory() as td:
+        _w(Path(td) / "src" / "main.ts", "export function boot() {}\n")
+        art = "这里所谓 `called` 时机，与 `during` 阶段一致，均由 `boot` 接管。"
+        fictitious, verified = verify._check_code_refs(verify._extract_refs(art), Path(td))
+        assert "called" not in fictitious and "during" not in fictitious
+        assert any(v.startswith("boot") for v in verified)
