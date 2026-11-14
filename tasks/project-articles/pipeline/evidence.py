@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -286,6 +287,27 @@ def grounding_report(article: str, source_dir: Path | None) -> dict:
     }
 
 
+def claims_only_failure(article: str, source_dir: Path | None) -> list[str] | None:
+    """门禁失败是否**只**卡在「无就近依据的论断」上。
+
+    是则返回这些论断（供定向回填逐条处理），否则返回 None。锚点 / 逐字源码块 /
+    可复现命令任一不达标都算「不是」——那种情况缺的是素材本身，回填救不了。
+    """
+    if source_dir is None:
+        return None
+    r = grounding_report(article, source_dir)
+    if len(r["anchors"]) < MIN_LINE_ANCHORS or r["invalid_anchors"]:
+        return None
+    if r["source_blocks"] < MIN_REAL_SOURCE_BLOCKS:
+        return None
+    if len(r["commands"]) < MIN_REPRO_COMMANDS or r["invalid_commands"]:
+        return None
+    claims = r["ungrounded_claims"]
+    if len(claims) <= MAX_UNGROUNDED_CLAIMS:
+        return None
+    return claims
+
+
 def grounding_issue(article: str, source_dir: Path | None) -> str | None:
     """证据链不达标则返回可操作的中文隔离原因；通过返回 None。
 
@@ -392,3 +414,30 @@ def build_anchor_block(sandbox_dir: Path, batches: list, max_files: int = 8,
         + ("\n".join(cmds) if cmds
            else "（项目无 Makefile，正文须给出真实存在的命令，不得编造）")
     )
+
+
+def apply_grounding_repairs(article: str, pairs: list[tuple[str, str]]) -> tuple[str, int, int]:
+    """按字符串精确替换回填补丁；找不到原句、或改动过大（换主题）的补丁一律丢弃。
+
+    「最小改动」校验是必要的：实测模型会把「登录页无法走中继」整句换成「Home 页的数据
+    预取在 SSR 阶段…」——语义换题，虽然锚点真实、闸门也过，但读者读到的已经不是原文的
+    论证了。用字符相似度兜住：只接受「原句 + 补锚点 / 换几个词」这种级别的手术。
+    """
+    applied = rejected = 0
+    for old, new in pairs:
+        old = old.strip()
+        new = new.strip()
+        if not old or old not in article:
+            continue
+        if new.upper().startswith("DELETE"):
+            article = article.replace(old, "", 1)
+            applied += 1
+            continue
+        if difflib.SequenceMatcher(None, old, new).ratio() < 0.45:
+            rejected += 1
+            continue
+        article = article.replace(old, new, 1)
+        applied += 1
+    # 删句后可能留下多余空行
+    article = re.sub(r"\n{3,}", "\n\n", article)
+    return article, applied, rejected

@@ -57,7 +57,12 @@ from pipeline.config import (  # noqa: E402
     STYLE_NAMES,
     STYLE_SPECS,
 )
-from pipeline.evidence import build_anchor_block, grounding_issue  # noqa: E402
+from pipeline.evidence import (  # noqa: E402
+    apply_grounding_repairs,
+    build_anchor_block,
+    claims_only_failure,
+    grounding_issue,
+)
 from pipeline.frontmatter import (  # noqa: E402
     clean_code_block_whitespace,
     fix_frontmatter_slug,
@@ -570,20 +575,102 @@ def _relevance_issue(ctx: RunContext, article: str) -> str | None:
     )
 
 
-def enforce_grounding(ctx: RunContext, article: str, phase: str) -> bool:
+_REPAIR_BLOCK_RE = re.compile(
+    r"\[REPAIR\s*\d+\]\s*\n"
+    r"\s*原文[:：]\s*(?P<old>.+?)\n"
+    r"\s*改为[:：]\s*(?P<new>.+?)(?=\n\s*\[REPAIR|\Z)",
+    re.DOTALL,
+)
+
+
+def repair_grounding_claims(article: str, claims: list[str],
+                            anchor_block: str) -> tuple[str, int, int]:
+    """定向证据回填：只重写「无就近依据」的论断，返回 (文章, 输入tokens, 输出tokens)。
+
+    这类失败一般不是没证据（锚点清单往往有几十条真实 `path:line`），而是 Writer
+    没把锚点落到那几句排他/因果表述上。做法是让模型回**补丁**（原句→改句），
+    由程序精确替换：模型碰不到其余内容，也不会出现「只回了片段、全文丢了一半」。
+    补丁解析不到时退回「输出全文」形态，并校验字数与 front matter 完整性。
+    """
+    writer = create_writer(task="project-articles")
+    pt = ct = 0
+
+    def _ask(description: str, expected: str):
+        nonlocal pt, ct
+        task = Task(description=description, expected_output=expected, agent=writer)
+        crew = Crew(agents=[writer], tasks=[task], process=Process.sequential, verbose=True)
+        out = _kickoff(crew)
+        usage = getattr(crew, "usage_metrics", None)
+        pt += getattr(usage, "prompt_tokens", 0) if usage else 0
+        ct += getattr(usage, "completion_tokens", 0) if usage else 0
+        return out.tasks_output[0].raw if out.tasks_output else ""
+
+    raw = _ask(
+        prompts.grounding_repair_description(claims, anchor_block),
+        "修补块列表（[REPAIR i] / 原文： / 改为：）",
+    )
+    pairs = [(m.group("old"), m.group("new")) for m in _REPAIR_BLOCK_RE.finditer(raw)]
+    if pairs:
+        fixed, applied, rejected = apply_grounding_repairs(article, pairs)
+        if applied:
+            print(f"   回填补丁：解析 {len(pairs)} 条，替换 {applied} 条"
+                  + (f"，丢弃 {rejected} 条（改动过大/换主题）" if rejected else ""))
+            return fixed, pt, ct
+        print(f"   回填补丁：解析 {len(pairs)} 条但无一可用，退回全文形态")
+
+    # 兜底：要求输出完整全文（成本更高，但至少能拿到可替换的整篇）
+    raw = _ask(
+        prompts.grounding_repair_full_article_description(claims, anchor_block, article),
+        "完整文章全文（含 front matter 与全部代码块）",
+    )
+    text = strip_outer_fence(raw)
+    has_fm = article.lstrip().startswith("---")
+    if has_fm and not text.lstrip().startswith("---"):
+        return article, pt, ct
+    if len(text) < int(len(article) * 0.6):
+        return article, pt, ct
+    return text, pt, ct
+
+
+def enforce_grounding(ctx: RunContext, article: str, phase: str,
+                      allow_repair: bool = True) -> str | None:
     """论断—源码一致性硬闸：不达标即隔离，绝不保存中文 / 翻译 / 发布。
+
+    返回 None 表示已隔离（调用方立即结束）；否则返回（可能被回填修复过的）文章。
 
     与 _relevance_issue 的分工：后者查「是不是在讲本项目」，这里查
     「说出来的因果有没有源码依据」。phase 写进隔离原因，便于分辨证据是
     写作阶段就没给，还是被 Phase 3 的修正删掉了。
+
+    `allow_repair`：仅当失败**只**来自「论断缺就近锚点」时尝试一次定向回填。
+    Phase 3 之后不再回填——那一轮的意义是「删掉不可核内容」，再让模型补写会绕过它。
     """
     issue = grounding_issue(article, ctx.source_dir)
     if issue is None:
-        return True
+        return article
+
+    if allow_repair:
+        claims = claims_only_failure(article, ctx.source_dir)
+        if claims:
+            print(f"\n🔧 [{phase}] 仅论断缺就近锚点（{len(claims)} 条），先做一次定向证据回填…")
+            anchor_block = build_anchor_block(ctx.sandbox_dir, ctx.batches)
+            repaired, pt, ct = repair_grounding_claims(article, claims, anchor_block)
+            ctx.add_usage(pt, ct)
+            if repaired is not article:
+                reissue = grounding_issue(repaired, ctx.source_dir)
+                if reissue is None:
+                    print("✅ 证据回填后通过论断—源码一致性检查")
+                    return repaired
+                print(f"⚠️ 回填后仍未通过：{reissue}")
+                article = repaired  # 隔离的是更接近可用的那一版
+                issue = reissue
+            else:
+                print("⚠️ 回填输出不可用（字数塌陷），按原稿处理")
+
     print(f"\n❌ [{phase}] {issue}")
     print("   文章不可发布。已隔离至 needs-review 目录，请按提示补源码证据后重跑。")
     quarantine(article, ctx.slug_zh, f"[{phase}] {issue}")
-    return False
+    return None
 
 
 def phase3_verify(ctx: RunContext, article: str) -> str | None:
@@ -904,7 +991,9 @@ def main():
 
     # 论断—源码一致性（写作后立刻查）：缺的是证据而不是「写错的引用」，
     # Phase 3 只会删除、不会补证据，早隔离可省掉最多 3 轮无效 LLM 修正。
-    if not enforce_grounding(ctx, article, "p2-write"):
+    # 仅当失败只来自「论断缺就近锚点」时，先做一次定向证据回填再判。
+    article = enforce_grounding(ctx, article, "p2-write")
+    if article is None:
         return
 
     print(f"📊 CrewAI 主体: {ctx.prompt_tokens} 输入 + {ctx.completion_tokens} 输出")
@@ -916,7 +1005,9 @@ def main():
 
     # 最终形态复核：Phase 3 的 LLM 修正 / 程序化删改可能把 `path:line` 锚点、
     # 真实源码块或 make 命令一并删掉。这里也覆盖骨架分支（:604）的唯一出口。
-    if not enforce_grounding(ctx, article, "p3-verified"):
+    # 不回填：这一轮的语义是「删掉不可核内容」，再让模型补写会绕过核查。
+    article = enforce_grounding(ctx, article, "p3-verified", allow_repair=False)
+    if article is None:
         return
     save_draft(ctx, article, "p3-verified")
 

@@ -275,3 +275,61 @@ def test_headings_are_not_claims():
     claims = evidence.claim_sentences(art)
     assert all(not s.startswith("#") for _i, s in claims), "标题不能被当成论断句"
     assert any("必须有据可查" in s or "必须自己实现协议" in s for _i, s in claims)
+
+
+def test_claims_only_failure_detects_repairable_case():
+    """证据齐备、只有论断缺就近锚点 → 可以交给定向回填。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _source(sd)
+        art = _good_article().replace(
+            "## 源码导航",
+            "## 代价\n\n"
+            "Node 必须自己从头实现这套协议，因为上游没有现成的可复用实现。\n\n"
+            "这个组合决定了请求的三条去向，必须由引擎侧独占端口。\n\n"
+            "所以登录页无法走中继做渲染，只能由引擎自己接管。\n\n"
+            "## 源码导航",
+        )
+        claims = evidence.claims_only_failure(art, sd)
+        assert claims is not None, "锚点/源码块/命令都达标时应当判为可回填"
+        assert len(claims) == 3, claims
+        assert evidence.grounding_issue(art, sd) is not None
+
+
+def test_claims_only_failure_rejects_missing_evidence_case():
+    """素材本身就不达标时不能回填（回填救不了缺源码块的稿）。"""
+    with tempfile.TemporaryDirectory() as td:
+        sd = Path(td)
+        _source(sd)
+        art = "## 架构\n\n因为 SSE 是长连接，所以容器里不能用 nginx，只能换 Node。\n"
+        assert evidence.claims_only_failure(art, sd) is None
+
+
+def test_apply_grounding_repairs_accepts_minimal_edit():
+    """补锚点属于最小改动，应当被采纳。"""
+    old = "这个组合决定了请求的三条去向，静态资产交给 docroot。"
+    art = f"## 边界\n\n{old}\n"
+    fixed, applied, rejected = evidence.apply_grounding_repairs(
+        art, [(old, old[:-1] + "（见 `src/api.ts:2`）。")])
+    assert applied == 1 and rejected == 0
+    assert "src/api.ts:2" in fixed
+
+
+def test_apply_grounding_repairs_rejects_topic_switch():
+    """整句换主题（哪怕新句锚点真实）必须丢弃：读者读到的已不是原文的论证。"""
+    old = "所以登录页无法通过中继做 SSR，只能由引擎自己接管。"
+    new = "Home 页的数据预取在 SSR 阶段完成，返回 { data, status } 结构（见 `src/api.ts:3`）。"
+    art = f"## 边界\n\n{old}\n"
+    fixed, applied, rejected = evidence.apply_grounding_repairs(art, [(old, new)])
+    assert applied == 0 and rejected == 1
+    assert old in fixed
+
+
+def test_apply_grounding_repairs_delete_sentence():
+    """DELETE 表示整句删除，且不留多余空行。"""
+    art = "A\n\n必须只有一个答案，因为这是唯一的做法。\n\nB\n"
+    fixed, applied, _ = evidence.apply_grounding_repairs(
+        art, [("必须只有一个答案，因为这是唯一的做法。", "DELETE")])
+    assert applied == 1
+    assert "唯一的做法" not in fixed
+    assert "\n\n\n" not in fixed
