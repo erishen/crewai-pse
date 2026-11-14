@@ -95,3 +95,15 @@ def test_auto_generate_tldr_builds_bullets():
 def test_auto_generate_tldr_rejects_too_few_bullets():
     llm = _FakeLLM(["- 只有一条要点\n- 第二条"])
     assert blocks.auto_generate_tldr("正文。", {"desc": "d"}, "", llm, "m") == ""
+
+
+def test_normalize_splits_multi_pair_block():
+    """模型把 5 条问答写进一个 [faq] 块时，必须拆成 5 块（旧实现只留第一条）。"""
+    one_block = "[faq]\n" + "\n".join(
+        f"问：问题{i}？\n答：答案{i}。" for i in range(1, 6)
+    ) + "\n[/faq]\n"
+    out = blocks.normalize_faq_blocks(one_block, "zh")
+    assert blocks.count_faq_blocks(out) == 5
+    assert out.count("[/faq]") == 5
+    # 幂等：再跑一遍不变
+    assert blocks.normalize_faq_blocks(out, "zh") == out

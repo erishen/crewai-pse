@@ -31,6 +31,32 @@ from pipeline.sanitize import normalize_five_paragraph_headings
 from pipeline.seo import auto_description, generate_excerpt, inject_series_links
 
 
+def looks_truncated(zh: str, en: str) -> str | None:
+    """判断英文稿是否被输出上限截断；返回原因（None = 完整）。
+
+    2026-11-14 nsbp-lume 实跑：中文 38KB 译成英文时烧完 8192 输出 tokens，
+    正文停在半句话（"…as long as it can fool the original `exists"），
+    ## 复盘 / 源码导航 / FAQ 整段丢失，却照样落盘。
+    """
+    if not en.strip():
+        return "英文稿为空"
+    ratio = len(en) / max(len(zh), 1)
+    if ratio < 0.55:
+        return f"英文长度只有中文的 {ratio:.0%}"
+    zh_sections = zh.count("\n## ")
+    en_sections = en.count("\n## ")
+    if en_sections < zh_sections:
+        return f"章节数 {en_sections} < 中文 {zh_sections}"
+    last = ""
+    for ln in reversed(en.strip().splitlines()):
+        if ln.strip():
+            last = ln.strip()
+            break
+    if not last.endswith(("。", ".", "!", "?", "！", "？", "[/faq]", "```", "---", "|")):
+        return f"结尾疑被截断：…{last[-30:]}"
+    return None
+
+
 def translate(
     article: str,
     slug: str,
@@ -45,14 +71,32 @@ def translate(
     """翻译英文 + 统计 token + 可选发布。"""
     # 翻译英文
     print("🌐 翻译英文版...")
+    raw_en, truncation = "", None
+    for _attempt in range(2):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompts.translate_prompt(article)}],
+                # 8192 对 38KB 中文稿不够：实测译到正文中段就烧完上限，尾部章节整段丢失
+                max_tokens=16384,
+                temperature=0.3,
+            )
+            candidate = resp.choices[0].message.content or ""
+        except Exception as e:
+            print(f"⚠️ 翻译调用失败（第 {_attempt + 1} 次）: {e}")
+            candidate = ""
+        usage = getattr(resp, "usage", None) if candidate else None
+        if usage:
+            prompt_tokens += usage.prompt_tokens
+            completion_tokens += usage.completion_tokens
+            print(f"📊 翻译: {usage.prompt_tokens} 输入 + {usage.completion_tokens} 输出")
+        raw_en, truncation = candidate, looks_truncated(article, candidate)
+        if truncation is None:
+            break
+        print(f"⚠️ 英文稿疑似截断（{truncation}）"
+              + ("" if _attempt else "，重试一次…"))
+
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompts.translate_prompt(article)}],
-            max_tokens=8192,
-            temperature=0.3,
-        )
-        raw_en = resp.choices[0].message.content or ""
         en_content = normalize_tldr(
             normalize_faq_blocks(
                 normalize_five_paragraph_headings(
@@ -83,11 +127,6 @@ def translate(
             print(f"⚠️ TL;DR 条数不一致：中文 {zh_tldr} 条 / 英文 {en_tldr} 条，请复核英文稿")
         elif en_tldr:
             print(f"📝 TL;DR: 中英文各 {en_tldr} 条")
-        t_usage = resp.usage
-        if t_usage:
-            prompt_tokens += t_usage.prompt_tokens
-            completion_tokens += t_usage.completion_tokens
-            print(f"📊 翻译: {t_usage.prompt_tokens} 输入 + {t_usage.completion_tokens} 输出")
         # ── SEO 程序化层：英文也注入 description + 同系列内链 ──
         en_content = inject_series_links(en_content, project_key, "en")
         en_desc = auto_description(en_content, "en")
@@ -101,39 +140,12 @@ def translate(
             en_content = inject_frontmatter_excerpt(en_content, en_excerpt)
         else:
             print("⚠️ 无法生成英文 excerpt（将回退 description）")
+        if truncation:
+            print(f"❌ 英文稿截断未修复（{truncation}），不覆盖 en 文件，请重跑翻译")
+            return
         en_path = ARTICLES_DIR / "en" / f"{slug}.md"
         en_path.parent.mkdir(parents=True, exist_ok=True)
         en_path.write_text(en_content, encoding="utf-8")
         print(f"✅ 英文已保存 → {en_path}")
     except Exception as e:
         print(f"⚠️ 翻译失败（跳过）: {e}")
-
-    # Token 统计
-    total = prompt_tokens + completion_tokens
-    print(f"\n📊 Token 总消耗: {prompt_tokens} 输入 + {completion_tokens} 输出 = {total} 合计")
-    if total:
-        print(f"💰 预估费用: ¥{total * 0.0000014:.4f}")
-
-    # 发布到 WordPress
-    if do_publish and project_key:
-        print(f"\n{'='*60}")
-        print("🚀 发布文章到 WordPress...")
-        pub_result = subprocess.run(
-            [sys.executable, str(BASE / "publish.py"), project_key],
-            capture_output=True,
-            text=True,
-        )
-        print(pub_result.stdout)
-        if pub_result.returncode != 0:
-            print(pub_result.stderr)
-            # 文章在此前已经用 write_text 同步落盘。发布是「可选附加动作」，
-            # 非交互环境下 publish.py 的确认门会取消并 exit 1 —— 旧实现把它
-            # 当成整次生成失败，导致 sidecar 返回 error 而非「已生成」，
-            # 模型进而谎报「文章没生成/出了小问题」。绝不因可选发布失败
-            # 推翻已经成功的生成结果。
-            print(
-                f"⚠️ 未发布：发布步骤返回码 {pub_result.returncode}；"
-                "文章已生成并保存，生成结果不受影响"
-            )
-        else:
-            print("✅ 发布步骤完成")

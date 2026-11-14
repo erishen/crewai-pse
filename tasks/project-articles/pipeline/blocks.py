@@ -40,24 +40,51 @@ def normalize_faq_blocks(text: str, lang: str = "zh") -> str:
     """
     q_label, a_label = ("Q: ", "A: ") if lang == "en" else ("问：", "答：")
 
+    def _pairs(body: str) -> list[tuple[str, str]]:
+        """把一个块里的问答逐条切开。
+
+        模型经常把 4-6 条问答全写进**同一个** `[faq]` 块；WordPress 端按短代码
+        一条一解析，旧实现只取第一对、其余静默丢弃（实跑 5 条变 1 条）。
+        """
+        pairs: list[tuple[str, str]] = []
+        cur_q: str | None = None
+        cur_a: list[str] = []
+        for ln in body.splitlines():
+            s = ln.strip()
+            if not s:
+                continue
+            qm = re.match(r"^(?:问|Q(?:uestion)?)\s*[:：]\s*(.*)$", s)
+            am = re.match(r"^(?:答|A(?:nswer)?)\s*[:：]\s*(.*)$", s)
+            if qm:
+                if cur_q is not None:
+                    pairs.append((cur_q, "\n".join(cur_a).strip()))
+                cur_q, cur_a = qm.group(1).strip(), []
+            elif am:
+                cur_a.append(am.group(1).strip())
+            elif cur_a:
+                cur_a.append(s)
+            elif cur_q:
+                cur_q = f"{cur_q} {s}"
+        if cur_q is not None:
+            pairs.append((cur_q, "\n".join(cur_a).strip()))
+        return [(re.sub(r"\s+", " ", q).strip(), a.strip())
+                for q, a in pairs if q.strip() and a.strip()]
+
     def repl(m):
         attrs, body = m.group(1) or "", (m.group(2) or "").strip()
         if "[faq" in body:
             # 少了闭合标签导致跨块吞并，宁可原样保留也不合并两条问答
             return m.group(0)
-        qa = FAQ_QA_RE.search(body)
-        if qa:
-            q, a = qa.group(1), qa.group(2)
-        else:
+        found = _pairs(body)
+        if not found:
             attr_q = FAQ_ATTR_Q_RE.search(attrs.strip())
             if not attr_q:
                 return m.group(0)
-            q, a = attr_q.group(1), body
-        q = re.sub(r"\s+", " ", q).strip()
-        a = a.strip()
-        if not q or not a:
-            return m.group(0)
-        return f"[faq]\n{q_label}{q}\n{a_label}{a}\n[/faq]"
+            found = [(attr_q.group(1).strip(), body)]
+        blocks = [
+            f"[faq]\n{q_label}{q}\n{a_label}{a}\n[/faq]" for q, a in found
+        ]
+        return "\n\n".join(blocks)
 
     return FAQ_BLOCK_RE.sub(repl, text)
 
