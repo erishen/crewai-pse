@@ -209,11 +209,19 @@ def _body_for_claims(article: str) -> str:
 
 
 def claim_sentences(article: str) -> list[tuple[int, str]]:
-    """返回 (段落序号, 含因果/排他措辞的句子)。"""
+    """返回 (段落序号, 含因果/排他措辞的句子)。
+
+    标题（`#`/`##`/`###` 开头）不算论断句：标题天然是独立段落，身边不可能出现
+    `path:line` 或源码块，把它计入就是 100% 误报——而且它会排到「例如：…」的最前面，
+    让隔离原因指向一个根本没法改的句子（2026-11-14 nsbp-lume 实跑：
+    `### 代价：Node 必须自己实现 FastCGI 协议` 就是被这样误判的第一条）。
+    """
     out: list[tuple[int, str]] = []
     for idx, para in enumerate(_body_for_claims(article).split("\n\n")):
         for sent in re.split(r"[。！？；\n]", para):
             s = sent.strip()
+            if s.startswith("#"):
+                continue
             if 12 <= len(s) <= 220 and _CLAIM_MARKERS.search(s):
                 out.append((idx, s))
     return out

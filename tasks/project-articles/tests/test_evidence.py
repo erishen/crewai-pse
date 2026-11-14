@@ -265,3 +265,13 @@ def test_build_anchor_block_skips_markdown_docs():
         )
         assert "README.md:" not in block
         assert "`src/api.ts:1`" in block
+
+
+def test_headings_are_not_claims():
+    """标题不得计入论断句：它天然独立成段，身边永远没有证据 → 100% 误报。"""
+    art = ("## 正文\n\n"
+           "### 代价：Node 必须自己实现 FastCGI 协议\n\n"
+           "这一段给出真实锚点 `src/api.ts:3`，所以 Node 必须自己实现协议这一点有据可查。\n")
+    claims = evidence.claim_sentences(art)
+    assert all(not s.startswith("#") for _i, s in claims), "标题不能被当成论断句"
+    assert any("必须有据可查" in s or "必须自己实现协议" in s for _i, s in claims)
