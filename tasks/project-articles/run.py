@@ -42,6 +42,7 @@ from openai import OpenAI  # noqa: E402
 from pipeline import prompts  # noqa: E402
 from pipeline.blocks import (  # noqa: E402
     auto_generate_faq,
+    auto_generate_tldr,
     count_faq_blocks,
     count_tldr_bullets,
     normalize_faq_blocks,
@@ -811,6 +812,15 @@ def phase4_finalize(ctx: RunContext, article: str) -> str:
         print(f"❓ FAQ: {zh_faq_count} 条")
 
     article = normalize_tldr(article, "zh")
+    if count_tldr_bullets(article) == 0:
+        # 缺件就补：只提示不补等于放任 GEO 收益流失
+        print("\n⚠️ 文章缺少 TL;DR，尝试自动生成速览区块...")
+        tldr_block = auto_generate_tldr(
+            article, ctx.p, ctx.decision_line, ctx.client, ctx.model, "zh"
+        )
+        if tldr_block:
+            article = normalize_tldr(article.rstrip() + "\n\n" + tldr_block + "\n", "zh")
+            print(f"✅ 已自动补入 TL;DR：{count_tldr_bullets(article)} 条")
 
     # ── SEO 程序化层：自动 meta description + 同系列内链（零额外 token）──
     zh_desc = auto_description(article, "zh")
