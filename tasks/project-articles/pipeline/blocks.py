@@ -211,7 +211,8 @@ def normalize_tldr(text: str, lang: str = "zh") -> str:
     if not bullets:
         return text
     bullets = bullets[:5]
-    tldr = "## 速览（TL;DR）\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
+    heading = "## TL;DR" if lang == "en" else "## 速览（TL;DR）"
+    tldr = heading + "\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
     before = body[: block_m.start()].rstrip()
     after = body[block_m.end():].lstrip()
     rest = (before + "\n\n" + after).strip() + "\n"
@@ -281,7 +282,8 @@ def auto_generate_tldr(body: str, project: dict, decision_line: str,
                    for ln in out.splitlines()
                    if TLDR_BULLET_RE.match(ln.strip())]
         if len(bullets) >= TLDR_MIN_BULLETS:
-            return "## 速览（TL;DR）\n\n" + "\n".join(f"- {b}" for b in bullets[:5]) + "\n"
+            heading = "## TL;DR" if lang == "en" else "## 速览（TL;DR）"
+            return heading + "\n\n" + "\n".join(f"- {b}" for b in bullets[:5]) + "\n"
     return ""
 
 

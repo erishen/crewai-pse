@@ -107,3 +107,12 @@ def test_normalize_splits_multi_pair_block():
     assert out.count("[/faq]") == 5
     # 幂等：再跑一遍不变
     assert blocks.normalize_faq_blocks(out, "zh") == out
+
+
+def test_tldr_heading_is_localized():
+    """英文稿的速览标题不能是中文「速览（TL;DR）」。"""
+    en_block = "## 速览（TL;DR）\n\n- a\n- b\n- c\n"
+    out = blocks.normalize_tldr(en_block, "en")
+    assert out.startswith("## TL;DR")
+    zh_block = "## TL;DR\n\n- 一\n- 二\n- 三\n"
+    assert blocks.normalize_tldr(zh_block, "zh").startswith("## 速览（TL;DR）")
