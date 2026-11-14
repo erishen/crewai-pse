@@ -98,6 +98,32 @@ def strip_reasoning_leaks(text: str) -> str:
     return REASONING_LEAK_LINE_RE.sub("", text)
 
 
+def as_title(text: str, limit: int = 46) -> str:
+    """把一段描述压成标题长度的短语（标题位需要「标题」，不是一段话）。
+
+    2026-11-14 nsbp-lume 实跑：风格说明泄漏被拦下后，标题回落到整句项目描述——
+    76 字、带仓库内路径 `work/lume/lume` 和半角逗号，根本不能当标题发。兜底值
+    必须先过这道整形：去 markdown 修饰 → 在第一个分句处截断 → 去尾部标点。
+    """
+    t = re.sub(r"[`*_]+", "", text or "").strip().strip('"').strip("'")
+    t = re.sub(r"\s+", " ", t)
+    if len(t) > limit:
+        cut = -1
+        # 分句符比字符数更可靠：宁可留一个 50 字的完整短语，也别在词中间切断
+        for sep in ("：", ":", "，", ",", "；", ";", "——"):
+            pos = t.find(sep)
+            if 8 <= pos <= max(limit, 72):
+                cut = pos if cut < 0 else min(cut, pos)
+        if cut > 0:
+            t = t[:cut]
+        else:
+            # 没有可用分句符时按词边界截断：英文按字符硬切会切出 "Lume Engin" 这种半个词
+            t = t[:limit]
+            sp = t.rfind(" ")
+            t = t[:sp] if sp >= 12 else t
+    return t.rstrip(" 。．.，,；;：:、—-")
+
+
 def title_fallback(article: str, desc_fallback: str = "") -> str:
     """title 被判定为污染时的兜底：项目 desc → 正文首个二级标题 → 空串。
 
@@ -105,10 +131,10 @@ def title_fallback(article: str, desc_fallback: str = "") -> str:
     也不要把 `Action: read_file` 这类工具调用串发布成文章标题。
     """
     if desc_fallback:
-        return desc_fallback
+        return as_title(desc_fallback)
     m = re.search(r"^##\s+(.+?)\s*$", article, re.MULTILINE)
     if m:
-        return m.group(1).strip()
+        return as_title(m.group(1))
     return ""
 
 

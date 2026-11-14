@@ -177,3 +177,14 @@ def test_style_instruction_not_used_as_title():
     title = re.search(r"^title:\s*(.*)$", out, re.M).group(1)
     assert "按要求强制" not in title
     assert "评测驱动型" not in title
+
+
+def test_title_fallback_is_a_title_not_a_sentence():
+    """兜底标题必须被压成短语：整句项目描述（76 字、带仓库路径）不能直接当标题。"""
+    desc = ("React 服务端渲染(SSR)+ Lume 引擎,对齐姊妹项目 lume-crm 的标准范式:"
+            "work/lume/lume 里的 examples/react-ssr.lume 链路。")
+    t = sanitize.as_title(desc)
+    assert len(t) <= 46
+    assert t.endswith(("引擎", "范式", "链路")) or "，" not in t
+    assert "examples/react-ssr.lume" not in t
+    assert sanitize.title_fallback("---\ntitle: x\n---\n\n## 落地改造\n", desc) == t
