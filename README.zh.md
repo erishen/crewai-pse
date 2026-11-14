@@ -267,7 +267,7 @@ uv sync            # 或：make install
 
 ## 许可证
 
-MIT
+MIT，见 [LICENSE](LICENSE)。
 
 ---
 
