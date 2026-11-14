@@ -76,6 +76,7 @@ from pipeline.frontmatter import (  # noqa: E402
     set_frontmatter_tags,
     strip_outer_fence,
 )
+from pipeline.polish import polish_article, report_polish
 from pipeline.sanitize import (  # noqa: E402
     clean_section,
     count_code_blocks,
@@ -840,6 +841,10 @@ def phase4_finalize(ctx: RunContext, article: str) -> str:
         print("⚠️ 无法生成 excerpt（列表摘要将回退 description）")
 
     article = inject_series_links(article, ctx.project_key, "zh")
+
+    # 编辑层体检：同一段源码不重复贴、标题中英混排、写作腔、结尾复述
+    article, polish_report = polish_article(article, "zh")
+    report_polish(polish_report)
 
     zh_tldr_count = count_tldr_bullets(article)
     if zh_tldr_count == 0:

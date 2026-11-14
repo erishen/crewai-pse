@@ -14,6 +14,7 @@ from pipeline.blocks import (
     normalize_faq_blocks,
     normalize_tldr,
 )
+from pipeline.polish import polish_article, report_polish
 from pipeline.config import ARTICLES_DIR, BASE, STANDARD_TAGS_EN
 from pipeline.frontmatter import (
     clean_code_block_whitespace,
@@ -140,6 +141,8 @@ def translate(
             en_content = inject_frontmatter_excerpt(en_content, en_excerpt)
         else:
             print("⚠️ 无法生成英文 excerpt（将回退 description）")
+        en_content, en_polish = polish_article(en_content, "en")
+        report_polish(en_polish)
         if truncation:
             print(f"❌ 英文稿截断未修复（{truncation}），不覆盖 en 文件，请重跑翻译")
             return
