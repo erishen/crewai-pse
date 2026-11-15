@@ -123,13 +123,17 @@ def _index_source(source_dir: Path) -> tuple[set[str], str, str]:
         is_containerfile = p.name in ("Dockerfile", "Containerfile") or p.name.startswith(
             ("Dockerfile.", "Containerfile.")
         )
-        if ext in _DOC_EXT:
+        # CMakeLists.txt 的扩展名是 .txt，会被 _DOC_EXT 归进文档；但
+        # add_custom_target、CMAKE_CURRENT_SOURCE_DIR、VERBATIM 这些只写在
+        # CMake 里，不当代码真相就会把构建图描述判成“文档名≠代码名”的误报。
+        is_cmake = p.name == "CMakeLists.txt" or ext == ".cmake"
+        if ext in _DOC_EXT and not is_cmake:
             try:
                 doc_texts.append(p.read_text(encoding="utf-8", errors="strict"))
             except (UnicodeDecodeError, OSError):
                 pass
             continue
-        if ext not in _CODE_EXT and not is_cfg_sample and not is_makefile and not is_containerfile:
+        if ext not in _CODE_EXT and not is_cfg_sample and not is_makefile and not is_containerfile and not is_cmake:
             continue
         src_relpaths.add(rel)
         priority = 0 if any(d in p.parts for d in _SRC_PRIORITY_DIRS) else 1
