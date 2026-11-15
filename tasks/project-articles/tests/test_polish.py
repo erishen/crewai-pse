@@ -48,3 +48,12 @@ def test_tail_repetition_detected():
     root = "真正让这套编排失守的，是 existsSync 把文件存在当成了后端在，这句话说得很明白了。"
     text = f"## 一\n\n{root}\n\n## 二\n\n{root}\n\n## 三\n\n更短的收尾。\n"
     assert polish.find_tail_repetition(text)
+
+
+def test_dedupe_hint_is_not_reported_as_tail_repetition():
+    """去重插进去的指引句不算"结尾复述前文"。"""
+    body = "## 一\n\n甲句讲一件事，讲了二十来个字，具体内容在这里。\n\n## 二\n\n"
+    hint = "同一段源码已在「一」里逐字贴过，这里不再重复。"
+    text = body + hint + "\n\n乙句讲另一件事，也是二十来个字，内容如下。\n\n## 三\n\n" + hint + "\n"
+    out, rep = polish.polish_article(text, "zh")
+    assert rep["tail_repetition"] == []

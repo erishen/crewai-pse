@@ -124,6 +124,13 @@ def find_meta_narration(text: str, lang: str = "zh") -> list[tuple[int, str]]:
     return hits
 
 
+POINTER_PREFIXES = (
+    "同一段源码已在",
+    "The same source snippet was already quoted",
+    "The same source code was already pasted",
+)
+
+
 def _sentences(text: str) -> list[str]:
     """切句子，跳过列表项。
 
@@ -139,8 +146,9 @@ def _sentences(text: str) -> list[str]:
             continue
         for part in re.split(r"[。！？]|(?<=[.!?])\s+", stripped):
             part = part.strip()
-            if len(part) >= 20:
-                out.append(part)
+            if len(part) < 20 or part.startswith(POINTER_PREFIXES):
+                continue
+            out.append(part)
     return out
 
 
@@ -166,13 +174,19 @@ def find_tail_repetition(text: str) -> list[str]:
 
 
 def polish_article(text: str, lang: str = "zh") -> tuple[str, dict]:
-    """跑一遍编辑层体检：能改的直接改，改不动的报出来。"""
+    """跑一遍编辑层体检：能改的直接改，改不动的报出来。
+
+    报告必须在去重**之前**算：去重会插进「同一段源码已在X节贴过」这类指引句，
+    同一篇里出现多次后，再拿去比对就会把它们误判成"结尾复述前文"（2026-11-15 实跑命中）。
+    """
     text = normalize_title_spacing(text, lang)
+    meta = find_meta_narration(text, lang)
+    tail = find_tail_repetition(text)
     text, deduped = dedupe_code_blocks(text, lang)
     return text, {
         "deduped_blocks": deduped,
-        "meta_narration": find_meta_narration(text, lang),
-        "tail_repetition": find_tail_repetition(text),
+        "meta_narration": meta,
+        "tail_repetition": tail,
     }
 
 

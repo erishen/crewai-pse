@@ -55,6 +55,7 @@ from pipeline.config import (
     FIVE_PART_SPEC,
     MAX_RANKED_SYMBOLS,
     MIN_PROJECT_RELEVANCE,
+    MIN_REAL_SOURCE_BLOCKS,
     ROOT,
     STYLE_NAMES,
     STYLE_SPECS,
@@ -65,6 +66,7 @@ from pipeline.evidence import (  # noqa: E402
     claims_only_failure,
     grounding_issue,
     line_anchors,
+    real_source_blocks,
 )
 from pipeline.frontmatter import (  # noqa: E402
     clean_code_block_whitespace,
@@ -714,13 +716,20 @@ def phase3_verify(ctx: RunContext, article: str) -> str | None:
             # 而二次核查因拿不到任何符号反而会绿灯。这种情况必须隔离重生成。
             if blocks_after < blocks_before:
                 dropped = blocks_before - blocks_after
-                print(f"\n❌ 程序化修正删除了 {dropped} 个代码块：代码证据链已断，"
-                      "正文会残留无指代论述。文章不可发布，已隔离至 needs-review。")
-                quarantine(
-                    article, ctx.slug_zh,
-                    f"程序化修正删除了 {dropped} 个代码块，代码证据不完整，需重新生成",
-                )
-                return None
+                # 整块被删说明那一节的证据全是虚构的，但整篇还有没有救要看剩余证据量：
+                # 2026-11-14 第七遍实跑，删掉 1 个虚构块后仍有 12 块 / 22 锚点，
+                # 却因这条"见块就判死"整篇隔离——比该保留的严格得多。
+                if (real_source_blocks(article, ctx.source_dir) < MIN_REAL_SOURCE_BLOCKS
+                        or len(line_anchors(article, ctx.source_dir)[0]) < MIN_LINE_ANCHORS):
+                    print(f"\n❌ 程序化修正删除了 {dropped} 个代码块，剩余证据已不达标："
+                          "代码证据链已断，正文会残留无指代论述。文章不可发布，已隔离至 needs-review。")
+                    quarantine(
+                        article, ctx.slug_zh,
+                        f"程序化修正删除了 {dropped} 个代码块，剩余证据不足，需重新生成",
+                    )
+                    return None
+                print(f"  ⚠️ 程序化修正删除了 {dropped} 个虚构代码块"
+                      f"（剩余 {count_code_blocks(article)} 块，证据仍达标），继续复核")
             fictitious, verified, _metrics = verify_article(article, ctx.source_dir)
             code_refs = [f for f in fictitious if not f.startswith("[夸大]")]
             if code_refs:
