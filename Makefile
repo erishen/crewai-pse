@@ -11,7 +11,9 @@ export WP_PROXY
 export HTTP_PROXY := $(WP_PROXY)
 export HTTPS_PROXY := $(WP_PROXY)
 
-PY := uv run python
+# --frozen：运行时按 lockfile 安装，绝不改写 uv.lock（否则本机镜像源会把 lock 重写成
+# 阿里云地址）；环境需要变更时走 `make install`，不一致会直接报错而不是静默对齐。
+PY := uv run --frozen python
 P ?= $(shell grep '^DEFAULT_PROJECT=' .env 2>/dev/null | cut -d= -f2)
 # 归档后顺带在各平台目录重建该文章的副本（staging，等下次发平台时用最新源）
 NODE ?= node
