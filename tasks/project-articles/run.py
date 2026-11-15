@@ -919,6 +919,10 @@ def main():
     ctx.client = OpenAI(
         api_key=settings.OPENAI_API_KEY,
         base_url=settings.OPENAI_BASE_URL,
+        # tsm-hub 在客户端不传 tools 时会自动挂内置工具并跑 agent 循环：
+        # 翻译/摘要这类纯文本任务不需要，且循环极易撞上限（实测整批 502）。
+        # 该请求头只对网关生效，其他 OpenAI 兼容上游会忽略。
+        default_headers={"X-Llm-Router-Agent": "off"},
     )
     ctx.model = settings.OPENAI_MODEL.replace("openai/", "")
 

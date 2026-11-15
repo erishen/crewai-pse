@@ -4,6 +4,8 @@
 送进翻译 Agent 二次放大。
 """
 
+import os
+import re
 import subprocess
 import sys
 
@@ -30,6 +32,13 @@ from pipeline.frontmatter import (
 )
 from pipeline.sanitize import normalize_five_paragraph_headings
 from pipeline.seo import auto_description, generate_excerpt, inject_series_links
+
+# 分节翻译：单批中文字符预算（约 4k 英文 tokens 输出，留足余量防截断）
+CHUNK_CHAR_BUDGET = 6000
+CHUNK_MAX_TOKENS = 8192
+# 围栏代码块（判“正文是否被截短”时剔除）
+FENCE_RE = re.compile(r"```[\s\S]*?```")
+
 
 
 def looks_truncated(zh: str, en: str) -> str | None:
@@ -58,6 +67,143 @@ def looks_truncated(zh: str, en: str) -> str | None:
     return None
 
 
+def split_sections(article: str) -> list[str]:
+    """按二级标题切分为若干片段（前置块 + 每个 `##` 小节），代码围栏内的 `##` 不算标题。
+
+    切分是分节翻译的基础：整篇单发必然撞输出上限，而按标题切能保证每批都
+    “自带完整小节”，便于逐批判截断、失败只重试一小段。
+    """
+    sections: list[str] = []
+    cur: list[str] = []
+    in_fence = False
+    in_frontmatter = False
+    frontmatter_done = False
+    for idx, line in enumerate(article.splitlines(keepends=True)):
+        stripped = line.strip()
+        if idx == 0 and stripped == "---":
+            in_frontmatter = True
+        elif in_frontmatter and stripped == "---":
+            in_frontmatter = False
+            frontmatter_done = True
+        if not in_frontmatter and stripped.startswith("```"):
+            in_fence = not in_fence
+        is_heading = (
+            not in_fence
+            and not in_frontmatter
+            and frontmatter_done
+            and line.startswith("## ")
+        )
+        if is_heading and cur:
+            sections.append("".join(cur))
+            cur = []
+        cur.append(line)
+    if cur:
+        sections.append("".join(cur))
+    return sections
+
+
+def pack_batches(sections: list[str], budget: int = CHUNK_CHAR_BUDGET) -> list[str]:
+    """把片段按预算打包成批，保证每条 `##` 小节不被劈开。"""
+    batches: list[str] = []
+    cur: list[str] = []
+    size = 0
+    for sec in sections:
+        if cur and size + len(sec) > budget:
+            batches.append("".join(cur))
+            cur, size = [], 0
+        cur.append(sec)
+        size += len(sec)
+    if cur:
+        batches.append("".join(cur))
+    return batches
+
+
+def _prose_len(text: str) -> int:
+    """去掉围栏代码块后的字符数：代码原样保留，不参与“译文是否太短”的判定。"""
+    return len(FENCE_RE.sub("", text))
+
+
+def batch_problem(src: str, out: str) -> str | None:
+    """单批译文体检：空稿 / 标题缺失 / 正文长度异常 / 结尾断裂。
+
+    只比“正文”长度：技术稿里代码占比可达 35%，整篇字数比会误判成截断。
+    """
+    if not out.strip():
+        return "译文为空"
+    src_heads, out_heads = src.count("\n## "), out.count("\n## ")
+    if out_heads < src_heads:
+        return f"标题数 {out_heads} < 原文 {src_heads}"
+    src_prose = _prose_len(src)
+    ratio = _prose_len(out) / max(src_prose, 1)
+    if src_prose > 200 and ratio < 0.5:
+        return f"正文字数只有原文的 {ratio:.0%}"
+    last = ""
+    for ln in reversed(out.strip().splitlines()):
+        if ln.strip():
+            last = ln.strip()
+            break
+    if not last.endswith(("。", ".", "!", "?", "！", "？", "[/faq]", "```", "---", "|", ":", "`")):
+        return f"结尾疑被截断：…{last[-30:]}"
+    return None
+
+
+def translate_in_batches(
+    article: str, client, model: str, fallbacks: list[str] | None = None
+) -> tuple[str, str | None, int, int]:
+    """分节翻译整稿，返回 (英文全文, 截断原因, 输入 tokens, 输出 tokens)。
+
+    每批先试主模型、再试回退模型（网关侧别名可跨供应商 failover，但单次
+    502/半截仍需客户端换别名重试）；任何一批最终不合格就整篇判失败，
+    不落盘半成品。
+    """
+    batches = pack_batches(split_sections(article))
+    total = len(batches)
+    models = [m for m in [model, *(fallbacks or [])] if m]
+    print(f"✂️  分批翻译：{total} 批（每批 ≤ {CHUNK_CHAR_BUDGET} 字），候选模型 {models}")
+    parts: list[str] = []
+    pt_tokens = ct_tokens = 0
+    for i, chunk in enumerate(batches, 1):
+        budget = min(CHUNK_MAX_TOKENS, max(1024, int(len(chunk) * 2.2)))
+        reason, text = "未执行", ""
+        for candidate_model in models:
+            for attempt in range(2):
+                try:
+                    resp = client.chat.completions.create(
+                        model=candidate_model,
+                        messages=[{
+                            "role": "user",
+                            "content": prompts.translate_batch_prompt(
+                                chunk, i, total, is_first=(i == 1)
+                            ),
+                        }],
+                        max_tokens=budget,
+                        temperature=0.2,
+                    )
+                    text = resp.choices[0].message.content or ""
+                    usage = getattr(resp, "usage", None)
+                    if usage:
+                        pt_tokens += usage.prompt_tokens
+                        ct_tokens += usage.completion_tokens
+                except Exception as e:
+                    print(f"⚠️ 第 {i}/{total} 批 {candidate_model} 调用失败"
+                          f"（第 {attempt + 1} 次）: {str(e)[:120]}")
+                    text, reason = "", str(e)[:120]
+                    continue
+                reason = batch_problem(chunk, text)
+                if reason is None:
+                    break
+                print(f"⚠️ 第 {i}/{total} 批 {candidate_model} 不合格"
+                      f"（{reason}），重试")
+            if reason is None:
+                break
+            print(f"↩️  第 {i}/{total} 批换下一个模型")
+        if reason is not None:
+            return "", f"第 {i}/{total} 批：{reason}", pt_tokens, ct_tokens
+        parts.append(text.strip())
+        print(f"   ✅ 第 {i}/{total} 批：{len(chunk)} 字 → {len(text)} 字符")
+    return "\n\n".join(parts) + "\n", None, pt_tokens, ct_tokens
+
+
 def translate(
     article: str,
     slug: str,
@@ -72,30 +218,24 @@ def translate(
     """翻译英文 + 统计 token + 可选发布。"""
     # 翻译英文
     print("🌐 翻译英文版...")
-    raw_en, truncation = "", None
-    for _attempt in range(2):
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompts.translate_prompt(article)}],
-                # 8192 对 38KB 中文稿不够：实测译到正文中段就烧完上限，尾部章节整段丢失
-                max_tokens=16384,
-                temperature=0.3,
-            )
-            candidate = resp.choices[0].message.content or ""
-        except Exception as e:
-            print(f"⚠️ 翻译调用失败（第 {_attempt + 1} 次）: {e}")
-            candidate = ""
-        usage = getattr(resp, "usage", None) if candidate else None
-        if usage:
-            prompt_tokens += usage.prompt_tokens
-            completion_tokens += usage.completion_tokens
-            print(f"📊 翻译: {usage.prompt_tokens} 输入 + {usage.completion_tokens} 输出")
-        raw_en, truncation = candidate, looks_truncated(article, candidate)
-        if truncation is None:
-            break
-        print(f"⚠️ 英文稿疑似截断（{truncation}）"
-              + ("" if _attempt else "，重试一次…"))
+    fallbacks = [
+        m.strip()
+        for m in os.getenv("TRANSLATE_FALLBACK_MODELS", "deepseek-v4-flash,tr-zh").split(",")
+        if m.strip() and m.strip() != model
+    ]
+    raw_en, truncation, pt2, ct2 = translate_in_batches(
+        article, client, model, fallbacks
+    )
+    prompt_tokens += pt2
+    completion_tokens += ct2
+    print(f"📊 翻译: {pt2} 输入 + {ct2} 输出")
+    if truncation is None:
+        truncation = looks_truncated(article, raw_en)
+    if truncation:
+        # 截断必须在后处理之前判掉：否则空稿/残稿会先被 polish、SEO、excerpt 跑一遍
+        print(f"❌ 英文稿截断未修复（{truncation}），不覆盖 en 文件，请重跑翻译")
+        return
+
 
     try:
         en_content = normalize_tldr(

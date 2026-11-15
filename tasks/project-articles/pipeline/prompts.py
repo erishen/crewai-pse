@@ -231,6 +231,35 @@ def translate_prompt(article: str) -> str:
     )
 
 
+def translate_batch_prompt(chunk: str, part: int, total: int, is_first: bool) -> str:
+    """中文 → 英文翻译（分批版）：只译给定片段，结构与数量必须与原文一致。
+
+    整篇单发在 24KB 以上中文稿必定烧完输出上限（2026-11-14 nsbp-lume 实跑），
+    因此改为按 `##` 分批，每批单独判截断；本 prompt 负责让模型只做“译文替换”，
+    不擅自增删标题、代码块与 [faq] 区块。
+    """
+    front = (
+        "This is the FIRST part, so it starts with the YAML front matter: translate `title` "
+        "and `description`, keep every other key, and make `slug` end with `-en` "
+        "(e.g. `foo` -> `foo-en`), never `-zh`. "
+        if is_first
+        else "This is a later part: it has no front matter, start directly with the content. "
+    )
+    return (
+        f"Translate part {part}/{total} of a Chinese technical article into English. "
+        f"{front}"
+        "Hard rules: (1) output ONLY the translation of this part, no preamble, no summary; "
+        "(2) keep the same Markdown structure — same number of `##` headings, same list items, "
+        "same table rows, same `[faq]`...[/faq] blocks (keep the tags on their own lines and "
+        "rewrite inside labels as `Q: ` / `A: `); (3) inside code fences keep code, identifiers, "
+        "paths, commands, numbers and `path:line` anchors byte-identical — only translate "
+        "comments written in Chinese; (4) keep inline code spans and URLs unchanged; "
+        "(5) translate headings' text but keep the `##` level; "
+        "(6) never drop, merge or add sections, never stop mid-sentence. "
+        f"Source part:\n\n{chunk}"
+    )
+
+
 def fix_prompt(article: str, code_refs: list[str], exaggerations: list[str]) -> str:
     """核查未通过时的修正提示（删除虚构引用 / 夸大词，其余保持不变）。"""
     fix_parts = []

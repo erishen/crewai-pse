@@ -1,4 +1,4 @@
-.PHONY: install lint test clean articles articles-free articles-paid publish archive translate translate-free translate-paid validate discover sync-links check-links
+.PHONY: install lint test clean articles articles-free articles-paid publish archive translate translate-free translate-hub translate-agnes translate-paid validate discover sync-links check-links
 
 # 出网代理：优先用环境里已有的 WP_PROXY（容器部署会注入 host.docker.internal 形态），
 # 未设置时回退读 .env 的 WP_PROXY（本机默认，换端口只改 .env 一处）。
@@ -34,7 +34,7 @@ clean:
 
 # 默认用免费 free 模型（成本敏感模式）
 articles articles-free: ## CrewAI 撰写项目技术文章（默认 free 免费）用法: make articles [P=llamaindex-pse] [FLAGS=--publish]
-	OPENAI_API_KEY=$(shell grep '^FREE_KEY=' .env | cut -d= -f2) \
+	@OPENAI_API_KEY=$(shell grep '^FREE_KEY=' .env | cut -d= -f2) \
 	OPENAI_MODEL=openai/free-2.0-flash \
 	OPENAI_BASE_URL=$(shell grep '^FREE_BASE_URL=' .env | cut -d= -f2) \
 	$(PY) tasks/project-articles/run.py $(P) $(FLAGS)
@@ -42,9 +42,15 @@ articles articles-free: ## CrewAI 撰写项目技术文章（默认 free 免费�
 articles-paid: ## CrewAI 撰写项目技术文章（付费 deepseek，质量优先）用法: make articles-paid [P=...] [FLAGS=...]
 	$(PY) tasks/project-articles/run.py $(P) $(FLAGS)
 
-# 默认用免费 free 模型（成本敏感模式）
-translate translate-free: ## 仅翻译已有中文文章（默认 free 免费）用法: make translate [P=llamaindex-pse]
-	OPENAI_API_KEY=$(shell grep '^FREE_KEY=' .env | cut -d= -f2) \
+# 默认走本机 tsm-hub 网关：模型别名在网关侧做 failover，客户端只持自己的 sk-tr key
+translate translate-free translate-hub: ## 仅翻译已有中文文章（默认 tsm-hub 网关）用法: make translate [P=llamaindex-pse]
+	@OPENAI_API_KEY=$(shell grep '^HUB_KEY=' .env | cut -d= -f2) \
+	OPENAI_MODEL=$(shell grep '^HUB_MODEL=' .env | cut -d= -f2) \
+	OPENAI_BASE_URL=$(shell grep '^HUB_BASE_URL=' .env | cut -d= -f2) \
+	$(PY) tasks/project-articles/run.py $(P) --translate
+
+translate-agnes: ## 旧免费源 agnes（token 已整体失效，仅留档）用法: make translate-agnes [P=...]
+	@OPENAI_API_KEY=$(shell grep '^FREE_KEY=' .env | cut -d= -f2) \
 	OPENAI_MODEL=openai/free-2.0-flash \
 	OPENAI_BASE_URL=$(shell grep '^FREE_BASE_URL=' .env | cut -d= -f2) \
 	$(PY) tasks/project-articles/run.py $(P) --translate
