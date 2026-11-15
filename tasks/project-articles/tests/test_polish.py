@@ -57,3 +57,22 @@ def test_dedupe_hint_is_not_reported_as_tail_repetition():
     text = body + hint + "\n\n乙句讲另一件事，也是二十来个字，内容如下。\n\n## 三\n\n" + hint + "\n"
     out, rep = polish.polish_article(text, "zh")
     assert rep["tail_repetition"] == []
+
+
+def test_dedupe_drops_orphaned_anchor_caption():
+    """块被换成指引句后，块下方那行纯锚点图注不能留下来悬空。"""
+    block = "```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\n```"
+    text = f"## 一\n\n{block}\n\n（`scripts/build-ssr.js:1`–`scripts/build-ssr.js:5`）\n\n甲段。\n\n## 二\n\n{block}\n\n（`scripts/build-ssr.js:1`–`scripts/build-ssr.js:5`）\n\n乙段。\n"
+    out, n = polish.dedupe_code_blocks(text, "zh")
+    assert n == 1
+    assert out.count("scripts/build-ssr.js:1") == 1
+    assert "这里不再重复。" in out
+
+
+def test_orphaned_caption_after_existing_hint_is_removed():
+    """历史稿里已有的「指引句 + 悬空图注」也要清掉，不只是新生成的。"""
+    text = ("## 一\n\n同一段源码已在「映射」里逐字贴过（见 `a.ts:3`），这里不再重复。\n\n"
+            "（`scripts/build-ssr.js:1`–`scripts/build-ssr.js:5`）\n\n正文。\n")
+    out, n = polish.dedupe_code_blocks(text, "zh")
+    assert n == 0
+    assert "build-ssr.js" not in out

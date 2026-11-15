@@ -38,6 +38,12 @@ META_EN = (
 )
 
 FENCE_RE = re.compile(r"```[a-zA-Z]*\n.*?```", re.S)
+
+# 代码块底下那行纯锚点图注：`（`scripts/build-ssr.js:1`–`scripts/build-ssr.js:5`）`
+# 块被换成"指回原处"后这行必然悬空，而且同一段会在多节重复，一并清掉。
+ANCHOR_CAPTION_RE = re.compile(
+    r"\n\s*[（(]\s*`?[\w./-]+\.\w+:\d+`?\s*[–\-~—]\s*`?[\w./-]+\.\w+:\d+`?\s*[)）]\s*\n"
+)
 H2_RE = re.compile(r"^## (.+)$", re.M)
 # 只挑"短小的单行围栏"以外的块去重：`make check` 这种十来个字符重复一次不碍眼，
 # 替换成一句话反而显得啰嗦
@@ -75,10 +81,18 @@ def dedupe_code_blocks(text: str, lang: str = "zh") -> tuple[str, int]:
             hint = f'The same source snippet was already quoted verbatim in "{sec}"{where}; not repeating it here.'
         else:
             hint = f"同一段源码已在「{sec}」里逐字贴过{where}，这里不再重复。"
-        replacements.append((m.start(), m.end(), hint))
+        caption = ANCHOR_CAPTION_RE.match(text, m.end())
+        replacements.append((m.start(), caption.end() if caption else m.end(), hint))
 
     for start, end, hint in reversed(replacements):
         text = text[:start] + hint + text[end:]
+
+    # 历史稿里"指引句 + 悬空图注"成对出现（图注行是去重前贴的），这里一并清掉。
+    hint_re = re.compile(r"(同一段源码已在[^\n]*|The same source (?:snippet|code) was already (?:quoted|pasted)[^\n]*)")
+    for m in reversed(list(hint_re.finditer(text))):  # 倒序改，避免位移后偏移失效
+        caption = ANCHOR_CAPTION_RE.match(text, m.end())
+        if caption:
+            text = text[:m.end()] + text[caption.end():]
     return text, len(replacements)
 
 
@@ -180,13 +194,13 @@ def polish_article(text: str, lang: str = "zh") -> tuple[str, dict]:
     同一篇里出现多次后，再拿去比对就会把它们误判成"结尾复述前文"（2026-11-15 实跑命中）。
     """
     text = normalize_title_spacing(text, lang)
-    meta = find_meta_narration(text, lang)
-    tail = find_tail_repetition(text)
     text, deduped = dedupe_code_blocks(text, lang)
+    # 去重插进的指引句、以及它带出来的悬空图注，都不该算进复述统计；
+    # 指引句由 POINTER_PREFIXES 过滤，图注在 dedupe 里已经清掉。
     return text, {
         "deduped_blocks": deduped,
-        "meta_narration": meta,
-        "tail_repetition": tail,
+        "meta_narration": find_meta_narration(text, lang),
+        "tail_repetition": find_tail_repetition(text),
     }
 
 
