@@ -106,14 +106,19 @@ _SCAN_EXTS = (
     "*.java", "*.kt", "*.go", "*.rs", "*.c", "*.h", "*.cpp", "*.cc",
     "*.lume",
 )
+# 无扩展名但常被文章引用的构建文件：`EXPOSE` / `HEALTHCHECK` 这类常量只在这里，
+# 不扫就会把它们判成"源码中不存在"的误报（lume-showcase、lume-qt 都中过）。
+_SCAN_NAMES = ("Makefile", "makefile", "Dockerfile", "Containerfile")
 _SKIP_DIRS = (".venv", "__pycache__", "node_modules", ".src_cache", "target", "build", ".gradle")
 
 
-def _iter_source_files(source_dir: Path, exts=_SCAN_EXTS):
+def _iter_source_files(source_dir: Path, exts=_SCAN_EXTS, names=_SCAN_NAMES):
     """遍历源码目录下需要扫描的文件（跳过依赖/缓存目录）。"""
-    for ext in exts:
-        for f in source_dir.rglob(ext):
+    for pattern in (*exts, *names):
+        for f in source_dir.rglob(pattern):
             if any(skip in str(f) for skip in _SKIP_DIRS):
+                continue
+            if not f.is_file():
                 continue
             yield f
 

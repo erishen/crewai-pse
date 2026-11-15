@@ -118,13 +118,18 @@ def _index_source(source_dir: Path) -> tuple[set[str], str, str]:
         is_cfg_sample = p.name == ".env.example" or p.name.endswith(".env.example")
         # Makefile 无扩展名，但 make <target> 校验依赖它；显式当作代码真相
         is_makefile = p.name in ("Makefile", "makefile", "GNUmakefile")
+        # Dockerfile / Containerfile 同理：`EXPOSE` / `HEALTHCHECK` 只写在它们里面，
+        # 不当作代码真相就会把这些指令判成“源码中不存在”的误报。
+        is_containerfile = p.name in ("Dockerfile", "Containerfile") or p.name.startswith(
+            ("Dockerfile.", "Containerfile.")
+        )
         if ext in _DOC_EXT:
             try:
                 doc_texts.append(p.read_text(encoding="utf-8", errors="strict"))
             except (UnicodeDecodeError, OSError):
                 pass
             continue
-        if ext not in _CODE_EXT and not is_cfg_sample and not is_makefile:
+        if ext not in _CODE_EXT and not is_cfg_sample and not is_makefile and not is_containerfile:
             continue
         src_relpaths.add(rel)
         priority = 0 if any(d in p.parts for d in _SRC_PRIORITY_DIRS) else 1
