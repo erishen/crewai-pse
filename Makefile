@@ -34,9 +34,10 @@ clean:
 
 # 默认用免费 free 模型（成本敏感模式）
 articles articles-free: ## CrewAI 撰写项目技术文章（默认 free 免费）用法: make articles [P=llamaindex-pse] [FLAGS=--publish]
-	@OPENAI_API_KEY=$(shell grep '^FREE_KEY=' .env | cut -d= -f2) \
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	OPENAI_API_KEY=$$FREE_KEY \
 	OPENAI_MODEL=openai/free-2.0-flash \
-	OPENAI_BASE_URL=$(shell grep '^FREE_BASE_URL=' .env | cut -d= -f2) \
+	OPENAI_BASE_URL=$$FREE_BASE_URL \
 	$(PY) tasks/project-articles/run.py $(P) $(FLAGS)
 
 articles-paid: ## CrewAI 撰写项目技术文章（付费 deepseek，质量优先）用法: make articles-paid [P=...] [FLAGS=...]
@@ -44,15 +45,17 @@ articles-paid: ## CrewAI 撰写项目技术文章（付费 deepseek，质量优�
 
 # 默认走本机 tsm-hub 网关：模型别名在网关侧做 failover，客户端只持自己的 sk-tr key
 translate translate-free translate-hub: ## 仅翻译已有中文文章（默认 tsm-hub 网关）用法: make translate [P=llamaindex-pse]
-	@OPENAI_API_KEY=$(shell grep '^HUB_KEY=' .env | cut -d= -f2) \
-	OPENAI_MODEL=$(shell grep '^HUB_MODEL=' .env | cut -d= -f2) \
-	OPENAI_BASE_URL=$(shell grep '^HUB_BASE_URL=' .env | cut -d= -f2) \
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	OPENAI_API_KEY=$$HUB_KEY \
+	OPENAI_MODEL=$$HUB_MODEL \
+	OPENAI_BASE_URL=$$HUB_BASE_URL \
 	$(PY) tasks/project-articles/run.py $(P) --translate
 
 translate-agnes: ## 旧免费源 agnes（token 已整体失效，仅留档）用法: make translate-agnes [P=...]
-	@OPENAI_API_KEY=$(shell grep '^FREE_KEY=' .env | cut -d= -f2) \
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	OPENAI_API_KEY=$$FREE_KEY \
 	OPENAI_MODEL=openai/free-2.0-flash \
-	OPENAI_BASE_URL=$(shell grep '^FREE_BASE_URL=' .env | cut -d= -f2) \
+	OPENAI_BASE_URL=$$FREE_BASE_URL \
 	$(PY) tasks/project-articles/run.py $(P) --translate
 
 translate-paid: ## 仅翻译（付费 deepseek，质量优先）用法: make translate-paid [P=...]
