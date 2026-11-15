@@ -164,6 +164,7 @@ def _verify_cmd(tok: str, src_relpaths: set[str], src_blob: str, doc_blob: str) 
     low = tok.lower()
     if low.startswith("make "):
         target = tok.split(None, 1)[1].strip() if len(tok.split(None, 1)) > 1 else ""
+        target = target.split()[0].rstrip("，,。;:") if target else ""
         if not target:
             return None
         if any(rp.endswith("Makefile") or rp.endswith("makefile") for rp in src_relpaths):
@@ -240,6 +241,10 @@ def _verify(tok: str, cls: str, src_relpaths: set[str], src_blob: str,
         return _verify_path(tok, src_relpaths, src_blob, doc_blob, source_dir)
     if cls == "ident":
         if tok in src_blob:
+            return None
+        # `Makefile` / `Dockerfile` 这类无扩展名构建文件在正文里是文件名而非符号，
+        # 只要源码树里真有这个文件，就不该按「源码中找不到的标识符」报警。
+        if any(rp == tok or rp.rsplit("/", 1)[-1] == tok for rp in src_relpaths):
             return None
         if tok in doc_blob:
             return f"标识符 `{tok}` 仅在文档/README 出现，源码中未找到（疑似文档名≠代码名）"
