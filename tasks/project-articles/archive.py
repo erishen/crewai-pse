@@ -25,6 +25,30 @@ PROJECTS_FILE = BASE / "projects.json"
 PUBLISHED_FILE = BASE / "projects-published.json"
 
 
+def _on_disk_keys() -> set:
+    """Projects that still have an article body under articles/{zh,en}.
+
+    A project may be absent from both projects.json and projects-published.json
+    yet still be archivable (e.g. `legacy`): its body lives on disk. Deriving
+    keys from the filenames keeps the executor in step with the sidecar's
+    "projects.json ∪ body-on-disk" rule instead of rejecting a valid name with
+    a bare usage error.
+    """
+    keys = set()
+    if not WP_TOOLS_DIR:
+        return keys
+    for lang in ("zh", "en"):
+        d = WP_TOOLS_DIR / "articles" / lang
+        if not d.is_dir():
+            continue
+        for f in d.glob(f"*-{lang}.md"):
+            stem = f.name[: -(len(lang) + 4)]  # strip "-zh.md" / "-en.md"
+            key = stem.replace("_", "-")
+            if key:
+                keys.add(key)
+    return keys
+
+
 def _load_projects() -> dict:
     pending = {}
     if PROJECTS_FILE.exists():
@@ -34,6 +58,9 @@ def _load_projects() -> dict:
     if PUBLISHED_FILE.exists():
         with open(PUBLISHED_FILE, encoding="utf-8") as f:
             published = json.load(f)
+    # body-on-disk only adds keys; never override metadata from the json files.
+    for key in _on_disk_keys():
+        pending.setdefault(key, {})
     return {**published, **pending}
 
 
