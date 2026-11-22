@@ -77,7 +77,7 @@ def parse_batches(outline: str, source_dir: Path) -> list[dict]:
     def _ref_rel(f: str):
         """把提纲里的文件引用归一化为可用于 rglob 的相对字符串。
 
-        LLM 生成的提纲有时会写出绝对路径（如 /Users/erishen/.../x.md），
+        LLM 生成的提纲有时会写出绝对路径（根路径由环境配置提供，形如 $HOME/proj/x.md），
         直接传给 Path.rglob 会触发 NotImplementedError: Non-relative patterns
         are unsupported。这里把绝对路径收敛到 source_dir 内的相对部分；
         若绝对路径不在 source_dir 内则返回 None（无法匹配，跳过）。
